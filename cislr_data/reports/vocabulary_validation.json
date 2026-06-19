@@ -1,0 +1,401 @@
+{
+  "generated_at": "2026-06-18T18:37:06.033975+00:00",
+  "dataset_root": "cislr_data",
+  "video_search_root": "cislr_data\\CISLR_v1.5-a_videos\\CISLR_v1.5-a_videos",
+  "indexed_videos": 7050,
+  "matched_metadata_videos": 7050,
+  "missing_metadata_videos": 0,
+  "unique_glosses": 4764,
+  "saksham_targets": {
+    "HELLO": {
+      "row_count": 0,
+      "videos_found": 0,
+      "videos_missing": 0,
+      "sample_uids": []
+    },
+    "HELP": {
+      "row_count": 2,
+      "videos_found": 2,
+      "videos_missing": 0,
+      "sample_uids": [
+        "E91cfQBn8_4_1",
+        "d9fEfBJmy0Y_1"
+      ]
+    },
+    "STOP": {
+      "row_count": 3,
+      "videos_found": 3,
+      "videos_missing": 0,
+      "sample_uids": [
+        "FEi50jcTxxI_1",
+        "FHwjyQeLNuY",
+        "mwUQPlBBZgE"
+      ]
+    },
+    "YES": {
+      "row_count": 2,
+      "videos_found": 2,
+      "videos_missing": 0,
+      "sample_uids": [
+        "LAT-u9Ww5ZU",
+        "MXmTYGHWvvE"
+      ]
+    },
+    "NO": {
+      "row_count": 2,
+      "videos_found": 2,
+      "videos_missing": 0,
+      "sample_uids": [
+        "CXEDTo1PXCg",
+        "VS_ZuiQIJx0"
+      ]
+    },
+    "WATER": {
+      "row_count": 4,
+      "videos_found": 4,
+      "videos_missing": 0,
+      "sample_uids": [
+        "5FSC6Og1RBQ_2",
+        "SlORjr0kUM4",
+        "ZanVx78hi-g_1",
+        "vWkwy9ebsQg_1"
+      ]
+    },
+    "THANK YOU": {
+      "row_count": 6,
+      "videos_found": 6,
+      "videos_missing": 0,
+      "sample_uids": [
+        "-4MbWP5T-cU",
+        "IRmlHHtW_Q0_1",
+        "W_qFjH-GKzA_1",
+        "Yz4vZ5ALDfw",
+        "wK8amEJAK1Y"
+      ]
+    },
+    "PLEASE": {
+      "row_count": 3,
+      "videos_found": 3,
+      "videos_missing": 0,
+      "sample_uids": [
+        "iGDJKo1-w5k",
+        "vAW9QDnXLrE",
+        "vMbLDoCayk8"
+      ]
+    },
+    "SORRY": {
+      "row_count": 4,
+      "videos_found": 4,
+      "videos_missing": 0,
+      "sample_uids": [
+        "0sE5EMDNsDo",
+        "KXnSguJGdN8",
+        "TiPPYhh323E",
+        "v7LOMsrEiVI_1"
+      ]
+    },
+    "NO_SIGN": {
+      "row_count": 0,
+      "videos_found": 0,
+      "videos_missing": 0,
+      "sample_uids": []
+    }
+  },
+  "saksham_missing_targets": [
+    "HELLO",
+    "NO_SIGN"
+  ],
+  "saksham_matched_target_count": 8,
+  "vocabulary_tiers": [
+    {
+      "name": "tier_bootstrap",
+      "min_samples_per_gloss": 1,
+      "eligible_gloss_count": 4764,
+      "recommended_v1_size": 10,
+      "recommended_v1_feasible": true,
+      "top_glosses": [
+        {
+          "gloss": "MONDAY",
+          "count": 13
+        },
+        {
+          "gloss": "THURSDAY",
+          "count": 11
+        },
+        {
+          "gloss": "INTEREST",
+          "count": 10
+        },
+        {
+          "gloss": "FRIDAY",
+          "count": 9
+        },
+        {
+          "gloss": "PENCIL",
+          "count": 9
+        },
+        {
+          "gloss": "CHRISTMAS",
+          "count": 8
+        },
+        {
+          "gloss": "MOTHER",
+          "count": 8
+        },
+        {
+          "gloss": "TUESDAY",
+          "count": 8
+        },
+        {
+          "gloss": "YELLOW",
+          "count": 8
+        },
+        {
+          "gloss": "ANGRY",
+          "count": 7
+        },
+        {
+          "gloss": "AUGUST",
+          "count": 7
+        },
+        {
+          "gloss": "BILL",
+          "count": 7
+        },
+        {
+          "gloss": "DATE",
+          "count": 7
+        },
+        {
+          "gloss": "INCREASE",
+          "count": 7
+        },
+        {
+          "gloss": "INDIA",
+          "count": 7
+        },
+        {
+          "gloss": "IRON",
+          "count": 7
+        },
+        {
+          "gloss": "LIGHT",
+          "count": 7
+        },
+        {
+          "gloss": "NAME",
+          "count": 7
+        },
+        {
+          "gloss": "RUBBER",
+          "count": 7
+        },
+        {
+          "gloss": "SUNDAY",
+          "count": 7
+        }
+      ]
+    },
+    {
+      "name": "tier_v1",
+      "min_samples_per_gloss": 2,
+      "eligible_gloss_count": 1364,
+      "recommended_v1_size": 50,
+      "recommended_v1_feasible": true,
+      "top_glosses": [
+        {
+          "gloss": "MONDAY",
+          "count": 13
+        },
+        {
+          "gloss": "THURSDAY",
+          "count": 11
+        },
+        {
+          "gloss": "INTEREST",
+          "count": 10
+        },
+        {
+          "gloss": "FRIDAY",
+          "count": 9
+        },
+        {
+          "gloss": "PENCIL",
+          "count": 9
+        },
+        {
+          "gloss": "CHRISTMAS",
+          "count": 8
+        },
+        {
+          "gloss": "MOTHER",
+          "count": 8
+        },
+        {
+          "gloss": "TUESDAY",
+          "count": 8
+        },
+        {
+          "gloss": "YELLOW",
+          "count": 8
+        },
+        {
+          "gloss": "ANGRY",
+          "count": 7
+        },
+        {
+          "gloss": "AUGUST",
+          "count": 7
+        },
+        {
+          "gloss": "BILL",
+          "count": 7
+        },
+        {
+          "gloss": "DATE",
+          "count": 7
+        },
+        {
+          "gloss": "INCREASE",
+          "count": 7
+        },
+        {
+          "gloss": "INDIA",
+          "count": 7
+        },
+        {
+          "gloss": "IRON",
+          "count": 7
+        },
+        {
+          "gloss": "LIGHT",
+          "count": 7
+        },
+        {
+          "gloss": "NAME",
+          "count": 7
+        },
+        {
+          "gloss": "RUBBER",
+          "count": 7
+        },
+        {
+          "gloss": "SUNDAY",
+          "count": 7
+        }
+      ]
+    },
+    {
+      "name": "tier_v1_expanded",
+      "min_samples_per_gloss": 5,
+      "eligible_gloss_count": 82,
+      "recommended_v1_size": 150,
+      "recommended_v1_feasible": false,
+      "top_glosses": [
+        {
+          "gloss": "MONDAY",
+          "count": 13
+        },
+        {
+          "gloss": "THURSDAY",
+          "count": 11
+        },
+        {
+          "gloss": "INTEREST",
+          "count": 10
+        },
+        {
+          "gloss": "FRIDAY",
+          "count": 9
+        },
+        {
+          "gloss": "PENCIL",
+          "count": 9
+        },
+        {
+          "gloss": "CHRISTMAS",
+          "count": 8
+        },
+        {
+          "gloss": "MOTHER",
+          "count": 8
+        },
+        {
+          "gloss": "TUESDAY",
+          "count": 8
+        },
+        {
+          "gloss": "YELLOW",
+          "count": 8
+        },
+        {
+          "gloss": "ANGRY",
+          "count": 7
+        },
+        {
+          "gloss": "AUGUST",
+          "count": 7
+        },
+        {
+          "gloss": "BILL",
+          "count": 7
+        },
+        {
+          "gloss": "DATE",
+          "count": 7
+        },
+        {
+          "gloss": "INCREASE",
+          "count": 7
+        },
+        {
+          "gloss": "INDIA",
+          "count": 7
+        },
+        {
+          "gloss": "IRON",
+          "count": 7
+        },
+        {
+          "gloss": "LIGHT",
+          "count": 7
+        },
+        {
+          "gloss": "NAME",
+          "count": 7
+        },
+        {
+          "gloss": "RUBBER",
+          "count": 7
+        },
+        {
+          "gloss": "SUNDAY",
+          "count": 7
+        }
+      ]
+    },
+    {
+      "name": "tier_v2",
+      "min_samples_per_gloss": 10,
+      "eligible_gloss_count": 3,
+      "recommended_v1_size": 500,
+      "recommended_v1_feasible": false,
+      "top_glosses": [
+        {
+          "gloss": "MONDAY",
+          "count": 13
+        },
+        {
+          "gloss": "THURSDAY",
+          "count": 11
+        },
+        {
+          "gloss": "INTEREST",
+          "count": 10
+        }
+      ]
+    }
+  ],
+  "recommended_v1_vocabulary_size": 50,
+  "recommended_min_samples_per_class": 2
+}

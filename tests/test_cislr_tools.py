@@ -37,7 +37,7 @@ class TestCISLRTools(unittest.TestCase):
 
     def test_cislr_audit_counts_storage_and_splits(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            video_dir = os.path.join(temp_dir, "CISLR_v1.5-a_videos")
+            video_dir = os.path.join(temp_dir, "CISLR_v1.5-a_videos", "CISLR_v1.5-a_videos")
             os.makedirs(video_dir, exist_ok=True)
 
             csv_path = os.path.join(temp_dir, "dataset.csv")

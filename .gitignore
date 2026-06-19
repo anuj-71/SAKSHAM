@@ -55,6 +55,11 @@ dataset/manifest.jsonl
 dataset/confirmed_signs_log.jsonl
 dataset/dataset_export_*.json
 dataset/dataset_export_*.csv
+cislr_data/CISLR_v1.5-a_videos/
+cislr_data/**/*.mp4
+cislr_data/**/*.zip
+cislr_data/**/*.pkl
+cislr_data/.cache/
 tts_cache/
 SAKSHAM-V1/
 drawings/

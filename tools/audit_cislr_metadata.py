@@ -14,8 +14,14 @@ if REPO_ROOT not in os.sys.path:
 
 from src.sign_language.training.loader import DatasetRecord
 from src.sign_language.training.splits import split_records_by_signer
+from tools.cislr.paths import (
+    VideoPathResolver,
+    detect_video_dir,
+    discover_video_root,
+    resolve_video_path,
+    sum_mp4_bytes,
+)
 from tools.normalize_labels import TARGET_LABELS, detect_label_column, load_csv_rows, normalize_rows
-
 
 SIGNER_COLUMN_CANDIDATES = (
     "signer_id",
@@ -38,13 +44,6 @@ VIDEO_COLUMN_CANDIDATES = (
     "id",
 )
 
-VIDEO_DIR_CANDIDATES = (
-    "CISLR_v1.5-a_videos",
-    "videos",
-    "CISLR_videos",
-    ".",
-)
-
 FLOAT32_BYTES = 4
 LANDMARKS_PER_HAND = 21 * 3
 BYTES_PER_FRAME = (
@@ -63,43 +62,26 @@ def detect_signer_column(fieldnames: Sequence[str]) -> Optional[str]:
     return None
 
 
-def detect_video_dir(dataset_root: str) -> Optional[str]:
-    for candidate in VIDEO_DIR_CANDIDATES:
-        resolved = os.path.join(dataset_root, candidate)
-        if os.path.isdir(resolved):
-            return resolved
-    return None
-
-
-def resolve_video_path(video_dir: str, raw_value: str) -> str:
-    token = str(raw_value or "").strip()
-    if not token:
-        return ""
-
-    basename = os.path.basename(token)
-    if os.path.splitext(basename)[1]:
-        candidates = [basename]
-    else:
-        candidates = [f"{basename}.mp4", basename]
-
-    for candidate in candidates:
-        path = os.path.join(video_dir, candidate)
-        if os.path.exists(path):
-            return path
-    return os.path.join(video_dir, candidates[0])
-
-
-def detect_video_column(fieldnames: Sequence[str], rows: Sequence[Dict[str, str]], video_dir: Optional[str]) -> Optional[str]:
+def detect_video_column(
+    fieldnames: Sequence[str],
+    rows: Sequence[Dict[str, str]],
+    video_dir: Optional[str],
+    resolver: Optional[VideoPathResolver] = None,
+) -> Optional[str]:
     lowered = {name.lower(): name for name in fieldnames}
     scored_columns: List[Tuple[int, str]] = []
+    active_resolver = resolver
+    if video_dir and active_resolver is None:
+        active_resolver = VideoPathResolver(video_dir)
+
     for candidate in VIDEO_COLUMN_CANDIDATES:
         if candidate not in lowered:
             continue
         column_name = lowered[candidate]
         score = 0
-        if video_dir:
+        if active_resolver:
             for row in rows[:100]:
-                if os.path.exists(resolve_video_path(video_dir, row.get(column_name, ""))):
+                if active_resolver.exists(row.get(column_name, "")):
                     score += 1
         scored_columns.append((score, column_name))
 
@@ -143,13 +125,7 @@ def get_video_frame_count(video_path: str) -> int:
 
 
 def sum_directory_video_bytes(video_dir: Optional[str]) -> int:
-    if not video_dir:
-        return 0
-    total = 0
-    for entry in os.scandir(video_dir):
-        if entry.is_file() and entry.name.lower().endswith(".mp4"):
-            total += entry.stat().st_size
-    return total
+    return sum_mp4_bytes(video_dir or "")
 
 
 def audit_cislr_metadata(dataset_root: str, metadata_path: Optional[str] = None, label_column: Optional[str] = None) -> Dict:
@@ -162,9 +138,15 @@ def audit_cislr_metadata(dataset_root: str, metadata_path: Optional[str] = None,
     normalized_rows = normalize_rows(rows, label_column=resolved_label_column)
 
     matched_rows = [row for row in normalized_rows if row.get("saksham_label")]
-    video_dir = detect_video_dir(dataset_root)
+    video_dir = discover_video_root(dataset_root) or detect_video_dir(dataset_root)
     signer_column = detect_signer_column(fieldnames)
-    video_column = detect_video_column(fieldnames, normalized_rows, video_dir)
+    video_resolver = VideoPathResolver(video_dir) if video_dir else None
+    video_column = detect_video_column(
+        fieldnames,
+        normalized_rows,
+        video_dir,
+        resolver=video_resolver,
+    )
 
     target_counts = {label: 0 for label in TARGET_LABELS}
     for row in matched_rows:
@@ -176,10 +158,10 @@ def audit_cislr_metadata(dataset_root: str, metadata_path: Optional[str] = None,
     projected_landmark_bytes = 0
     frame_count_samples = []
 
-    if video_dir and video_column:
+    if video_dir and video_column and video_resolver:
         seen_paths = set()
         for row in matched_rows:
-            resolved_video_path = resolve_video_path(video_dir, row.get(video_column, ""))
+            resolved_video_path = video_resolver.resolve(row.get(video_column, ""))
             if not resolved_video_path or resolved_video_path in seen_paths:
                 continue
             seen_paths.add(resolved_video_path)
