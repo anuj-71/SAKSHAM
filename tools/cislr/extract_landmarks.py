@@ -1,4 +1,4 @@
-"""
+r"""
 Batch MediaPipe Hands landmark extraction for CISLR.
 
 Outputs per-video NPZ files in canonical SAKSHAM format:
@@ -16,12 +16,13 @@ Outputs per-video NPZ files in canonical SAKSHAM format:
   frame_count     int                  — total frames in source video
 
 Usage:
-    .\.venv\Scripts\python.exe -m tools.cislr.extract_landmarks --limit 0
+    .venv\Scripts\python.exe -m tools.cislr.extract_landmarks --limit 0
 
 """
 import argparse
 import csv
 import logging
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import List, Tuple
@@ -41,6 +42,16 @@ from tools.cislr.utils import (
 from src.sign_language.tracker import HandTracker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def sanitize_filename(name: str) -> str:
+    """Remove or replace characters that are invalid in Windows filenames."""
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", name)
+    sanitized = sanitized.replace(" ", "_")
+    sanitized = sanitized.strip(". ")
+    if not sanitized:
+        sanitized = "unnamed"
+    return sanitized
 
 
 def write_label_freq(counter: Counter, out_path: Path) -> None:
@@ -206,6 +217,7 @@ def main() -> int:
         "opened": 0,
         "success": 0,
         "failed": 0,
+        "skipped": 0,
     }
     per_gloss_counts = Counter()
 
@@ -216,6 +228,16 @@ def main() -> int:
 
         uid = r.get("uid") or r.get("id") or list(r.values())[0]
         gloss = normalize_label(r.get("gloss", r.get("label", "")))
+        sanitized_gloss = sanitize_filename(gloss)
+
+        # Resumability: skip if NPZ already exists in accepted or rejected
+        if (
+            (accepted_dir / f"{sanitized_gloss}_{uid}.npz").exists()
+            or (rejected_dir / f"{uid}.npz").exists()
+            or (rejected_dir / f"{sanitized_gloss}_{uid}.npz").exists()
+        ):
+            stats["skipped"] += 1
+            continue
 
         video_path = resolver.resolve(f"{uid}.mp4")
         stats["processed"] += 1
@@ -230,14 +252,14 @@ def main() -> int:
         # Reject if no hands present in any frame
         if np.max(left_present) == 0.0 and np.max(right_present) == 0.0:
             stats["failed"] += 1
-            (rejected_dir / f"{gloss}_{uid}.npz").write_bytes(b"")
+            (rejected_dir / f"{sanitized_gloss}_{uid}.npz").write_bytes(b"")
             continue
 
         # signer metadata if available in row
         signer_id = r.get("signer") or r.get("signer_id") or r.get("signerId") or r.get("uploader") or ""
 
         # save NPZ in canonical SAKSHAM format
-        out_path = accepted_dir / f"{gloss}_{uid}.npz"
+        out_path = accepted_dir / f"{sanitized_gloss}_{uid}.npz"
         np.savez_compressed(
             out_path,
             left_hand=left_hand.astype(np.float32),
@@ -263,6 +285,7 @@ def main() -> int:
         f.write(f"processed={stats['processed']}\n")
         f.write(f"success={stats['success']}\n")
         f.write(f"failed={stats['failed']}\n")
+        f.write(f"skipped={stats['skipped']}\n")
         f.write("per_gloss_counts:\n")
         for g, c in per_gloss_counts.most_common():
             f.write(f"{g},{c}\n")
