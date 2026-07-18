@@ -279,9 +279,10 @@ class UIRenderer:
             draw.text((px, py), state_text, font=self.font_live_state, fill=state_color)
             py += 28
 
-            # Show whatever partial/draft text we have
-            if draft and draft != "...":
-                wrapped = textwrap.fill(draft, width=70)
+            # Show currently transcribed/typed text or draft
+            display_str = session.typing_buffer or draft
+            if display_str and display_str != "...":
+                wrapped = textwrap.fill(display_str, width=70)
                 draw.text((px, py), wrapped, font=self.font_live, fill=(220, 220, 220))
             else:
                 draw.text((px, py), "Speak now...",
@@ -306,6 +307,33 @@ class UIRenderer:
             py += 28
             draw.text((px, py), "Enable the mic to start speech input.",
                       font=self.font_live, fill=(100, 100, 100))
+
+        # ── Live Sign Prediction (from ONNX GRU) ──
+        py += 16
+        pred = getattr(session, "live_prediction", None)
+        conf = getattr(session, "live_confidence", 0.0)
+        top3 = getattr(session, "live_top3", [])
+        buf_filled = getattr(session, "buffer_progress", 0)
+
+        # Prediction status line
+        if pred:
+            color = self._bgr_to_rgb(config.COLOR_SUCCESS)
+            pred_text = f"\U0001f590  {pred}  ({conf:.0%})"
+            draw.text((px, py), pred_text, font=self.font_live_state, fill=color)
+            py += 26
+            # Top-3 alternatives
+            top3_parts = [f"{l} ({c:.0%})" for l, c in top3]
+            draw.text((px, py), "Top 3: " + " | ".join(top3_parts),
+                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_TEXT_SECONDARY))
+            py += 20
+        elif buf_filled >= 64:
+            draw.text((px, py), "\U0001f3af  Waiting for stable prediction...",
+                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_WARNING))
+            py += 20
+        else:
+            draw.text((px, py), f"\u23F3  Buffering frames... ({buf_filled}/64)",
+                      font=self.font_small, fill=(130, 130, 130))
+            py += 20
 
         if session.dataset_mode:
             py += 54

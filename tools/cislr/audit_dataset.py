@@ -9,8 +9,8 @@ Produces JSON + Markdown reports covering:
   - Pipeline suitability assessment (MediaPipe → GRU → ONNX → SAKSHAM)
 
 Usage:
-  python tools/cislr/audit_dataset.py --dataset-root cislr_data
-  python tools/cislr/audit_dataset.py --dataset-root cislr_data --video-sample-size 50
+    .\.venv\Scripts\python.exe -m tools.cislr.audit_dataset --dataset-root cislr_data
+    .\.venv\Scripts\python.exe -m tools.cislr.audit_dataset --dataset-root cislr_data --video-sample-size 50
 """
 from __future__ import annotations
 

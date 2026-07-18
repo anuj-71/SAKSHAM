@@ -1,7 +1,16 @@
+import os
+import sys
+import warnings
+
+# ── Suppress noisy third-party startup banners ─────────────────────────────
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"   # Hides pygame banner & community message
+warnings.filterwarnings("ignore", category=UserWarning, module="pygame")
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+warnings.filterwarnings("ignore", message="SymbolDatabase.GetPrototype")
+
 import cv2
 import time
 import logging
-import sys
 
 import src.config.settings as config
 from src.camera.camera_manager import CameraManager
@@ -12,14 +21,21 @@ from src.ui.renderer import UIRenderer
 from src.session_manager import ConversationSession
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - [%(levelname)s] - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("saksham.log", mode="w")
-    ]
-)
+# Console: clean, short format  |  File: full timestamped log
+_console_handler = logging.StreamHandler(sys.stdout)
+_console_handler.setLevel(logging.INFO)
+_console_handler.setFormatter(logging.Formatter("  %(message)s"))
+
+_file_handler = logging.FileHandler("saksham.log", mode="w", encoding="utf-8")
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+logging.basicConfig(level=logging.DEBUG, handlers=[_console_handler, _file_handler])
+
+# Silence overly verbose third-party loggers in the console
+for _noisy in ("absl", "onnxruntime", "mediapipe", "tensorflow", "STT-Listener", "STT-Worker"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 
 # Global state for OpenCV callbacks
 scroll_offset = 0
@@ -56,9 +72,8 @@ def mouse_callback(event, x, y, flags, param):
 def main():
     global scroll_offset
     
-    logging.info("==========================================")
-    logging.info("        SAKSHAM V2.0 STARTED              ")
-    logging.info("==========================================")
+    logging.info("SAKSHAM — Starting up...")
+
 
     session = ConversationSession()
     global global_session
@@ -91,27 +106,78 @@ def main():
     tts_engine.start()
 
     # ── Sign Language Engine ──
+    # Maps model output labels → natural spoken sentences (fragments that join well)
+    # These keys MUST match the exact class names the ONNX model outputs.
     SIGN_TO_PHRASE = {
-        "HELLO": "Hello",
-        "HELP": "I need help",
-        "WATER": "I need water",
-        "THANK YOU": "Thank you",
-        "STOP": "Please stop",
-        "YES": "Yes",
-        "NO": "No"
+        "hello":    "Hello!",
+        "bye":      "Goodbye!",
+        "yes":      "Yes.",
+        "no":       "No.",
+        "please":   "Please.",
+        "thankyou": "Thank you!",
+        "water":    "I need water.",
+        "food":     "I need food.",
+        "drink":    "I need a drink.",
+        "hungry":   "I am hungry.",
+        "home":     "I want to go home.",
+        "mom":      "I need my mom.",
+        "dad":      "I need my dad.",
+        "sick":     "I am feeling sick.",
+        "where":    "Where are you?",
     }
+
+    class PhraseBuilder:
+        """
+        Buffers recognised signs and speaks them as one natural sentence
+        after PHRASE_PAUSE seconds of silence between signs.
+        Prevents the robotic word-by-word TTS behaviour.
+        """
+        PHRASE_PAUSE = 2.0   # seconds of silence before flushing
+
+        def __init__(self, sign_map: dict, speak_fn):
+            self._sign_map = sign_map
+            self._speak = speak_fn
+            self._buffer: list[str] = []
+            self._last_sign_time: float = 0.0
+            self._lock = __import__("threading").Lock()
+            self._flush_thread = __import__("threading").Thread(
+                target=self._flush_loop, daemon=True
+            )
+            self._flush_thread.start()
+
+        def add(self, raw_label: str):
+            phrase = self._sign_map.get(raw_label, raw_label.replace("_", " ").capitalize())
+            with self._lock:
+                self._buffer.append(phrase)
+                self._last_sign_time = time.time()
+
+        def _flush_loop(self):
+            """Background thread: flush buffer when PHRASE_PAUSE elapses."""
+            while True:
+                time.sleep(0.2)
+                with self._lock:
+                    if not self._buffer:
+                        continue
+                    elapsed = time.time() - self._last_sign_time
+                    if elapsed >= self.PHRASE_PAUSE:
+                        sentence = " ".join(self._buffer)
+                        self._buffer.clear()
+                # Speak outside the lock to avoid blocking add()
+                if elapsed >= self.PHRASE_PAUSE and sentence:
+                    self._speak(sentence)
+
+    phrase_builder = PhraseBuilder(sign_map=SIGN_TO_PHRASE, speak_fn=tts_engine.speak)
 
     def on_sign_recognized(raw_sign_label: str):
         if session.dataset_mode:
             return
-        # 1. Add RAW sign label to the conversation history
+        # 1. Show in conversation immediately so UI feels responsive
         session.add_message("Deaf User", raw_sign_label, source="Sign")
-        
-        # 2. Map to a natural phrase and speak it
-        spoken_phrase = SIGN_TO_PHRASE.get(raw_sign_label, raw_sign_label)
-        tts_engine.speak(spoken_phrase)
+        # 2. Buffer into phrase builder — TTS fires after a natural pause
+        phrase_builder.add(raw_sign_label)
 
     sl_engine = SignLanguageEngine(on_sign_recognized=on_sign_recognized)
+
 
     def refresh_dataset_insights():
         session.set_dataset_insights(
@@ -122,8 +188,12 @@ def main():
     
     # ── Speech-to-Text Engine ──
     def on_speech_text(text: str):
-        session.add_message("Hearing Person", text, source="Speech")
-        
+        if text.strip():
+            recognized = text.strip()
+            session.typing_buffer = recognized
+            session.add_message("Hearing Person", recognized, source="Speech")
+            session.typing_buffer = ""
+
     def on_speech_state(state: str):
         session.mic_state = state
         if state == "Listening":
@@ -242,6 +312,7 @@ def main():
 
     logging.info("Main loop active. Press 'q' / ESC to quit, 'd' to toggle DEV MODE.")
 
+
     try:
         while True:
             t_start = time.perf_counter()
@@ -262,6 +333,22 @@ def main():
             # ── 2. Sign Language Tracking & Recognition ──
             hand_detected, hand_data = sl_engine.process_frame(frame)
             session.set_live_hand_visibility(hand_data if hand_detected else None)
+
+            # Forward inference state to session (for UI display)
+            if sl_engine.inference is not None:
+                inf_state = sl_engine.inference.get_state()
+                session.live_prediction = inf_state["prediction"]
+                session.live_confidence = inf_state["confidence"]
+                session.live_top3 = inf_state["top3"]
+                session.buffer_progress = inf_state["buffer_progress"]
+                session.buffer_capacity = inf_state["buffer_capacity"]
+            else:
+                session.live_prediction = None
+                session.live_confidence = 0.0
+                session.live_top3 = []
+                session.buffer_progress = 0
+                session.buffer_capacity = 64
+
             if session.dataset_mode and sl_engine.dataset_manager.is_recording:
                 session.set_dataset_live_feedback(sl_engine.dataset_manager.get_live_recording_feedback())
             elif not sl_engine.has_review_clip():

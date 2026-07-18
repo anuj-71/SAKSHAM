@@ -5,6 +5,59 @@ import logging
 from typing import Dict, List, Tuple, Optional
 import src.config.settings as config
 
+
+# Compatibility: some mediapipe installs expose the solutions module directly
+# as `mp.solutions`, others place it under `mediapipe.python.solutions`.
+def _locate_mediapipe_solutions():
+    """Robustly locate the mediapipe 'solutions' module across packaging variants.
+
+    Strategy:
+    - If `mp` has attribute `solutions`, return it.
+    - Otherwise, walk `mp.__path__` using `pkgutil.walk_packages` and try to import
+      any submodule whose final component is 'solutions' (e.g. mediapipe.python.solutions).
+    - As a fallback, try a few known alternative import paths.
+    Returns the imported solutions module or None.
+    """
+    # Direct attribute is best
+    if hasattr(mp, "solutions"):
+        return mp.solutions
+
+    # Walk package submodules to find any 'solutions' package
+    try:
+        import pkgutil, importlib
+        if hasattr(mp, "__path__"):
+            # iterate over all submodules under mediapipe
+            for finder, name, ispkg in pkgutil.walk_packages(path=mp.__path__, prefix="mediapipe."):
+                # look for modules that end with '.solutions' or are exactly 'mediapipe.solutions'
+                if name.endswith(".solutions") or name == "mediapipe.solutions":
+                    try:
+                        mod = importlib.import_module(name)
+                        return mod
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+    # Try a few conventional fallbacks
+    try:
+        import importlib
+        mod = importlib.import_module("mediapipe.python.solutions")
+        return mod
+    except Exception:
+        pass
+
+    try:
+        mod = importlib.import_module("mediapipe.solutions")
+        return mod
+    except Exception:
+        pass
+
+    return None
+
+
+# Acquire solutions namespace once
+_MP_SOLUTIONS = _locate_mediapipe_solutions()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class HandTracker:
@@ -13,8 +66,12 @@ class HandTracker:
     extracts coordinates, and determines finger extension states.
     """
     def __init__(self):
-        self.mp_hands = mp.solutions.hands
-        self.mp_draw = mp.solutions.drawing_utils
+        if _MP_SOLUTIONS is None:
+            logging.error("MediaPipe 'solutions' namespace could not be located. Check your mediapipe installation.")
+            raise RuntimeError("mediapipe.solutions not found")
+
+        self.mp_hands = _MP_SOLUTIONS.hands
+        self.mp_draw = _MP_SOLUTIONS.drawing_utils
         
         # Initialize MediaPipe Hands model with specified confidence thresholds
         self.hands = self.mp_hands.Hands(

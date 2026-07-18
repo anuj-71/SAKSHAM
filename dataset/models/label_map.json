@@ -1,0 +1,17 @@
+{
+  "bye": 0,
+  "dad": 1,
+  "drink": 2,
+  "food": 3,
+  "hello": 4,
+  "home": 5,
+  "hungry": 6,
+  "mom": 7,
+  "no": 8,
+  "please": 9,
+  "sick": 10,
+  "thankyou": 11,
+  "water": 12,
+  "where": 13,
+  "yes": 14
+}

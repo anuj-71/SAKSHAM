@@ -8,9 +8,9 @@ Prerequisites:
      or set HF_TOKEN / HUGGING_FACE_HUB_TOKEN in the environment.
 
 Usage:
-  python tools/cislr/download_dataset.py
-  python tools/cislr/download_dataset.py --metadata-only
-  python tools/cislr/download_dataset.py --skip-videos
+    .\.venv\Scripts\python.exe -m tools.cislr.download_dataset
+    .\.venv\Scripts\python.exe -m tools.cislr.download_dataset --metadata-only
+    .\.venv\Scripts\python.exe -m tools.cislr.download_dataset --skip-videos
 """
 from __future__ import annotations
 

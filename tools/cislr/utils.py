@@ -20,7 +20,7 @@ DATASET_JSON    = CISLR_DATA_DIR / "dataset.json"
 LABEL_FREQ_CSV  = CISLR_DATA_DIR / "label_frequency.csv"
 
 # ── Target vocabulary ────────────────────────────────────────────────────────
-TARGET_LABELS = ["HELLO", "THANK YOU", "YES", "NO", "HELP", "WATER", "STOP"]
+TARGET_LABELS = ["SEE YOU TOMORROW", "THANK YOU", "YES", "NO", "HELP", "WATER", "STOP"]
 
 # ── Temporal window ──────────────────────────────────────────────────────────
 WINDOW_SIZE = 5          # consecutive frames per sample

@@ -1,6 +1,5 @@
-# Python standard ignores
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
-**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -17,18 +16,15 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
-# Environments & Secrets
+# ── Virtual Environment ───────────────────────────────────────────────────────
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
 .venv
 env/
 venv/
@@ -36,57 +32,60 @@ ENV/
 env.bak/
 venv.bak/
 
-# Logs and Caches
-*.log
-antigravity.log
-saksham.log
-logs/
-.cache
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.ipynb_checkpoints/
-
-# Application Specific / User Data
-exports/
-dataset/accepted/
-dataset/rejected/
-dataset/manifest.jsonl
-dataset/confirmed_signs_log.jsonl
-dataset/dataset_export_*.json
-dataset/dataset_export_*.csv
-cislr_data/CISLR_v1.5-a_videos/
-cislr_data/**/*.mp4
-cislr_data/**/*.zip
-cislr_data/**/*.pkl
-cislr_data/.cache/
-tts_cache/
-SAKSHAM-V1/
-drawings/
-whiteboard_*.png
-tests/*.png
-*.pyc
-
-# LLM Agent / System Generated
-.gemini/
-brain/
-artifacts/
-.system_generated/
-
-# OS-specific
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# VS Code & IDEs
+# ── IDEs ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints
+*.ipynb
+
+# ── Dataset (large raw files — never commit) ──────────────────────────────────
+*.parquet
+*.zip
+*.tar.gz
+SAKSHAM_DATASET/
+SAKSHAM-V1/
+dataset/raw_videos/
+dataset/landmarks/
+dataset/popsign_bulk/
+dataset/popsign_videos/
+dataset/.feature_cache/
+dataset/accepted/
+dataset/rejected/
+
+# ── Trained model weights (large binary files) ───────────────────────────────
+models/checkpoints/
+dataset/models/.feature_cache/
+*.pth
+*.pt
+*.ckpt
+*.bin
+
+# ── TTS audio cache ───────────────────────────────────────────────────────────
+tts_cache/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+wandb/
+
+# ── Outputs / exports (runtime generated) ────────────────────────────────────
+outputs/
+exports/
+
+# ── Temporary / scratch files ─────────────────────────────────────────────────
+*.tmp
+*.bak
+.cache/
+scratch_inspect_ckpt.py
+
+# ── Sensitive / private ───────────────────────────────────────────────────────
+.env
+*.env
+secrets.py
+config/secrets.py

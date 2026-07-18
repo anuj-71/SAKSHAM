@@ -1,36 +1,57 @@
 import time
 import logging
 import numpy as np
+from pathlib import Path
 from typing import Dict, Optional, Callable
 from collections import deque
 
 from src.sign_language.tracker import HandTracker
 from src.sign_language.dataset_manager import DatasetManager
+from src.sign_language.inference import ONNXInferenceEngine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+MODEL_PATH = Path(__file__).resolve().parents[2] / "dataset" / "models" / "model.onnx"
+LABEL_MAP_PATH = Path(__file__).resolve().parents[2] / "dataset" / "models" / "label_map.json"
 
 class SignLanguageEngine:
     """
     Core engine for processing hand tracking data and recognizing sign language.
-    Includes a dummy heuristic vocabulary for Phase 2 demonstration.
+    Uses ONNX GRU model for inference with stability filtering.
     """
     def __init__(self, on_sign_recognized: Optional[Callable[[str], None]] = None):
         self.tracker = HandTracker()
         self.dataset_manager = DatasetManager()
         self.on_sign_recognized = on_sign_recognized
         
-        # Temporal buffer for holding sequences of landmarks
-        self.sequence_buffer = deque(maxlen=30)
+        self.inference = self._init_or_none()
         
-        # Debouncing / Cooldown
+        # Legacy fields for dataset recording compatibility
+        self.sequence_buffer = deque(maxlen=30)
         self.sign_cooldowns: Dict[str, float] = {}
         self.cooldown_seconds = 2.5
         self.confidence_threshold = 0.75
-        
-        # State Machine
         self.current_candidate = None
         self.candidate_frames = 0
         self.frames_to_confirm = 5
+        self._last_notified_sign: Optional[str] = None
+
+    def _init_or_none(self) -> Optional[ONNXInferenceEngine]:
+        try:
+            if MODEL_PATH.exists() and LABEL_MAP_PATH.exists():
+                engine = ONNXInferenceEngine(
+                    model_path=str(MODEL_PATH),
+                    label_map_path=str(LABEL_MAP_PATH),
+                )
+                logging.info("ONNX GRU inference engine loaded (%s, %d classes)",
+                             MODEL_PATH.name, engine.num_classes)
+                return engine
+            else:
+                logging.warning("ONNX model not found at %s — inference disabled", MODEL_PATH)
+                return None
+        except Exception as e:
+            logging.warning("Failed to load ONNX inference engine: %s", e)
+            return None
 
     @staticmethod
     def _buffer_hand(hand: Dict) -> Dict:
@@ -43,12 +64,12 @@ class SignLanguageEngine:
     def process_frame(self, frame) -> tuple[bool, Dict]:
         """
         Process a single video frame. Extracts landmarks, updates sequence buffer,
-        and optionally triggers recognition logic.
+        and runs ONNX inference when enough frames accumulated.
         """
         success, hand_data = self.tracker.process_frame(frame)
         
         if success and hand_data:
-            # 1. Update temporal buffer
+            # 1. Update legacy temporal buffer (for dataset recording)
             self.sequence_buffer.append({
                 "timestamp": time.time(),
                 "primary_hand": hand_data.get("primary_hand"),
@@ -62,8 +83,22 @@ class SignLanguageEngine:
             if self.dataset_manager.is_recording:
                 self.dataset_manager.add_frame_data(hand_data)
                 
-            # 3. Attempt recognition
-            self._attempt_recognition(hand_data)
+            # 3. ONNX GRU inference (if model loaded)
+            if self.inference is not None:
+                state = self.inference.add_frame(hand_data)
+                # Fire callback only once per new confirmed prediction
+                new_pred = state["prediction"]
+                # Filter out unknown class (non-sign gestures)
+                if new_pred == "unknown":
+                    new_pred = None
+                if new_pred and new_pred != self._last_notified_sign and self.on_sign_recognized:
+                    self._last_notified_sign = new_pred
+                    self.on_sign_recognized(new_pred)
+                elif new_pred is None:
+                    self._last_notified_sign = None
+            else:
+                # Fallback: legacy heuristic
+                self._attempt_recognition(hand_data)
             
         return success, hand_data
 
@@ -74,58 +109,56 @@ class SignLanguageEngine:
         current_time = time.time()
         
         # Simple Heuristic Recognition for Demo Vocabulary:
-        # HELLO, YES, NO, THANK YOU, HELP, STOP, WATER
-        
+        # hello, yes, no, thank_you, help, stop, water
+
         finger_states = hand_data.get("finger_states", {})
         landmarks = hand_data.get("landmarks", [])
-        
+
         if not finger_states or not landmarks:
             return
 
-        # Extract individual states
         thumb = finger_states.get("thumb", False)
         index = finger_states.get("index", False)
         middle = finger_states.get("middle", False)
         ring = finger_states.get("ring", False)
         pinky = finger_states.get("pinky", False)
-        
+
         detected_sign = None
         confidence = 0.0
 
-        # Heuristic rules (dummy implementation for demonstration)
         if thumb and index and middle and ring and pinky:
-            y_base = landmarks[0][1] # wrist
+            y_base = landmarks[0][1]
             y_middle_tip = landmarks[12][1]
-            if (y_base - y_middle_tip) > 0.4: # Hand pointing strongly upwards
-                detected_sign = "STOP"
+            if (y_base - y_middle_tip) > 0.4:
+                detected_sign = "stop"
                 confidence = 0.85
             else:
-                detected_sign = "HELLO"
+                detected_sign = "hello"
                 confidence = 0.80
 
         elif thumb and not index and not middle and not ring and not pinky:
-            detected_sign = "YES"
+            detected_sign = "yes"
             confidence = 0.90
-            
+
         elif not thumb and index and not middle and not ring and not pinky:
-            detected_sign = "NO"
+            detected_sign = "no"
             confidence = 0.75
 
         elif thumb and index and middle and not ring and not pinky:
-            detected_sign = "WATER"
+            detected_sign = "water"
             confidence = 0.85
-            
+
         elif not thumb and not index and not middle and not ring and not pinky:
-            detected_sign = "HELP"
+            detected_sign = "help"
             confidence = 0.80
 
-        if detected_sign in ("HELLO", "STOP") and len(self.sequence_buffer) > 10:
+        if detected_sign in ("hello", "stop") and len(self.sequence_buffer) > 10:
             past_landmarks = self.sequence_buffer[-10].get("primary_landmarks", [])
             if past_landmarks:
                 past_wrist_y = past_landmarks[0][1]
                 current_wrist_y = landmarks[0][1]
-                if (current_wrist_y - past_wrist_y) > 0.1: # moved down
-                    detected_sign = "THANK YOU"
+                if (current_wrist_y - past_wrist_y) > 0.1:
+                    detected_sign = "thank_you"
                     confidence = 0.88
 
         # --- State Machine: Detected -> Candidate -> Confirmed ---

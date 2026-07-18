@@ -6,18 +6,36 @@ import os
 import logging
 
 DEFAULT_DATASET_LABELS = [
-    "HELLO",
-    "HELP",
-    "WATER",
-    "THANK YOU",
-    "STOP",
-    "YES",
-    "NO",
-    "PLEASE",
-    "SORRY",
-    "GOOD",
-    "BAD",
-    "NO_SIGN",
+    "hello",
+    "goodbye",
+    "thank_you",
+    "please",
+    "sorry",
+    "yes",
+    "no",
+    "okay",
+    "understand",
+    "dont_understand",
+    "help",
+    "stop",
+    "doctor",
+    "hospital",
+    "call",
+    "water",
+    "food",
+    "eat",
+    "drink",
+    "bathroom",
+    "sleep",
+    "sit",
+    "stand",
+    "come",
+    "go",
+    "name",
+    "pain",
+    "hungry",
+    "friend",
+    "home",
 ]
 
 DEFAULT_SIGNER_IDS = [f"SIGNER_{idx:02d}" for idx in range(1, 11)]
@@ -59,6 +77,13 @@ class ConversationSession:
             "right_visible": False,
             "hands_present": 0,
         }
+
+        # Live sign prediction state (from ONNX inference)
+        self.live_prediction: Optional[str] = None
+        self.live_confidence: float = 0.0
+        self.live_top3: list[tuple[str, float]] = []
+        self.buffer_progress: int = 0
+        self.buffer_capacity: int = 64
         
         # Ensure export directory exists
         os.makedirs("exports", exist_ok=True)

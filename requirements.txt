@@ -1,13 +1,9 @@
-# requirements.txt for SAKSHAM (generated from direct imports)
-# Core runtime dependencies (unpinned - install latest compatible versions)
-opencv-python
-mediapipe
-numpy
-pillow
-SpeechRecognition
-edge-tts
-pygame
-
-# PyAudio: SpeechRecognition microphone support typically requires PyAudio on Windows.
-# On Windows, it's often easiest to install a prebuilt wheel for PyAudio if pip build fails.
-PyAudio
+torch>=2.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=12.0.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+tqdm>=4.65.0
+rich>=13.0.0

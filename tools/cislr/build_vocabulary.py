@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-samples", type=int, default=2, help="Minimum accepted samples per gloss")
+    parser.add_argument("--max-classes", type=int, default=0, help="Limit to top N most frequent glosses (0 = unlimited)")
     parser.add_argument("--accepted-dir", type=str, default=None, help="Override accepted NPZ directory")
     args = parser.parse_args()
 
@@ -61,6 +62,13 @@ def main() -> int:
 
     candidate_glosses = {g for g, c in freq.items() if c >= args.min_samples}
     logging.info("Glosses with >=%d samples: %d", args.min_samples, len(candidate_glosses))
+
+    # Sort candidates by frequency descending then alphabetically, apply max-classes limit
+    sorted_candidates = sorted(candidate_glosses, key=lambda g: (-freq[g], g))
+    if args.max_classes > 0:
+        sorted_candidates = sorted_candidates[:args.max_classes]
+        candidate_glosses = set(sorted_candidates)
+        logging.info("Limited to top %d glosses by frequency", len(candidate_glosses))
 
     filtered = [(p, g) for p, g in file_glosses if g in candidate_glosses]
     sorted_glosses = sorted(candidate_glosses)
