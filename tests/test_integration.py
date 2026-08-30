@@ -11,7 +11,7 @@ from src.session_manager import ConversationSession
 _MODEL_AVAILABLE = MODEL_PATH.exists()
 _SKIP_NO_MODEL = pytest.mark.skipif(
     not _MODEL_AVAILABLE,
-    reason=f"model.onnx not found at {MODEL_PATH} — run tools/train.py first.",
+    reason=f"model.onnx not found at {MODEL_PATH} - run tools/train.py first.",
 )
 
 # ---------------------------------------------------------------------------
@@ -63,8 +63,8 @@ def test_label_map_no_mom_dad():
     engine, _, _ = _make_engine_and_session()
     assert engine.inference is not None
     label_map = engine.inference.label_map
-    assert "mom" not in label_map, "'mom' found in label map — Phase 1 removal incomplete"
-    assert "dad" not in label_map, "'dad' found in label map — Phase 1 removal incomplete"
+    assert "mom" not in label_map, "'mom' found in label map: Phase 1 removal incomplete"
+    assert "dad" not in label_map, "'dad' found in label map: Phase 1 removal incomplete"
 
 
 @_SKIP_NO_MODEL
@@ -111,8 +111,8 @@ def test_confirmed_sign_triggers_callback_eventually():
     """
     With 200 identical frames a sign SHOULD confirm at least once.
     The stability filter needs STABILITY_WINDOW (7) consecutive matching votes,
-    then one cooldown period — 200 frames (× stride=4 → 50 inference calls) gives
-    ample opportunity.  If no sign fires, it is flagged as a soft warning, not a
+    then one cooldown period: 200 frames (x stride=4 -> 50 inference calls) gives
+    ample opportunity. If no sign fires, it is flagged as a soft warning, not a
     hard failure, because the model may output low confidence on synthetic landmarks.
     """
     engine, session, confirmed_signs = _make_engine_and_session()
@@ -123,7 +123,7 @@ def test_confirmed_sign_triggers_callback_eventually():
     for _ in range(200):
         engine.process_frame(None)
 
-    # Soft check — inform rather than hard-fail on synthetic inputs
+    # Soft check: inform rather than hard-fail on synthetic inputs
     if not confirmed_signs:
         pytest.xfail(
             "No sign confirmed after 200 synthetic frames "
@@ -137,7 +137,7 @@ def test_prediction_log_written():
     """If a sign has been confirmed, the JSONL prediction log must exist."""
     log_path = 'exports/onnx_predictions.jsonl'
     if not os.path.exists(log_path):
-        pytest.skip("No prediction log yet — run the live app first to generate one")
+        pytest.skip("No prediction log yet: run the live app first to generate one")
 
     with open(log_path) as f:
         logs = [json.loads(line) for line in f if line.strip()]

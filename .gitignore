@@ -44,20 +44,12 @@ venv.bak/
 .ipynb_checkpoints
 *.ipynb
 
-# -- Dataset (large raw files: never commit) ----------------------------------
+# -- Dataset -------------------------------------------------------------------
 *.parquet
 *.zip
 *.tar.gz
 SAKSHAM_DATASET/
 SAKSHAM-V1/
-dataset/raw_videos/
-dataset/landmarks/
-dataset/popsign_bulk/
-dataset/popsign_videos/
-dataset/.feature_cache/
-dataset/processed/cache/
-dataset/accepted/
-dataset/rejected/
 
 # ── Trained model weights (large binary files) ───────────────────────────────
 models/checkpoints/
