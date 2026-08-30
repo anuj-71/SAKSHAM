@@ -36,23 +36,22 @@ PROCESSED_DIR = DATASET_DIR / "processed"
 METADATA_DIR = DATASET_DIR / "metadata"
 MODELS_DIR = PROJECT_ROOT / "models"
 
-# 15 Core Conversational Classes
+# 14 Core Conversational Classes present in Google ASL
 TARGET_CLASSES = [
-    "hello",
     "bye",
-    "yes",
-    "no",
-    "please",
-    "thankyou",
-    "water",
     "drink",
     "food",
-    "hungry",
-    "help",
+    "hello",
     "home",
+    "hungry",
+    "no",
+    "please",
     "sick",
-    "where",
     "sleep",
+    "thankyou",
+    "water",
+    "where",
+    "yes",
 ]
 
 # Alias map to handle dataset naming variations
@@ -71,7 +70,6 @@ CLASS_ALIASES: Dict[str, str] = {
     "food": "food",
     "eat": "food",
     "hungry": "hungry",
-    "help": "help",
     "home": "home",
     "sick": "sick",
     "where": "where",
@@ -254,6 +252,13 @@ def main():
 
         class_counts[sign] += 1
 
+    # Create label map from classes that actually have samples
+    active_classes = sorted([cls_name for cls_name in TARGET_CLASSES if class_counts[cls_name] > 0])
+    label_map = {cls_name: idx for idx, cls_name in enumerate(active_classes)}
+    label_map_path = MODELS_DIR / "label_map.json"
+    with open(label_map_path, "w", encoding="utf-8") as f:
+        json.dump(label_map, f, indent=2)
+
     # Write manifest.csv
     manifest_csv = METADATA_DIR / "manifest.csv"
     with open(manifest_csv, "w", newline="", encoding="utf-8") as f:
@@ -264,11 +269,11 @@ def main():
     log.info("=" * 60)
     log.info("IMPORT COMPLETED SUCCESSFULLY")
     log.info("Total samples processed: %d across %d signers", len(manifest_rows), len(signers_set))
-    log.info("Class distribution:")
-    for cls_name in sorted(TARGET_CLASSES):
+    log.info("Class distribution (%d active classes):", len(active_classes))
+    for cls_name in active_classes:
         log.info("  %-12s: %4d samples", cls_name, class_counts[cls_name])
     log.info("Manifest written to: %s", manifest_csv)
-    log.info("Label map written to: %s", label_map_path)
+    log.info("Label map written to: %s (%d classes)", label_map_path, len(label_map))
     log.info("=" * 60)
 
 

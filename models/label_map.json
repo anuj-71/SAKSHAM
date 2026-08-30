@@ -1,1 +1,16 @@
-{}
+{
+  "bye": 0,
+  "drink": 1,
+  "food": 2,
+  "hello": 3,
+  "home": 4,
+  "hungry": 5,
+  "no": 6,
+  "please": 7,
+  "sick": 8,
+  "sleep": 9,
+  "thankyou": 10,
+  "water": 11,
+  "where": 12,
+  "yes": 13
+}
