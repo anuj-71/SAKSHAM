@@ -44,7 +44,7 @@ venv.bak/
 .ipynb_checkpoints
 *.ipynb
 
-# ── Dataset (large raw files — never commit) ──────────────────────────────────
+# -- Dataset (large raw files: never commit) ----------------------------------
 *.parquet
 *.zip
 *.tar.gz
