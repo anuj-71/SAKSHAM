@@ -18,8 +18,10 @@ logger = logging.getLogger("ONNXInferenceEngine")
 SEQ_LEN = 30
 FEATURE_DIM = 225            # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
 VOTING_BUFFER_SIZE = 10      # Collect last 10 frames of predictions
-VOTING_CONFIRM_THRESHOLD = 7 # Confirm only if same class appears in >= 7 of 10 frames
-MIN_CONFIDENCE = 0.75        # Minimum confidence threshold (idle/null filter)
+VOTING_CONFIRM_THRESHOLD = 6 # Confirm only if same real sign appears in >= 6 of 10 frames
+NULL_PENALTY_FACTOR = 0.6    # Multiply null logit by 0.6 before softmax to give real signs fair weight
+NULL_MIN_CONFIDENCE = 0.85   # If null predicted at < 85% confidence, treat as uncertain
+MIN_CONFIDENCE = 0.70        # Minimum confidence threshold for real signs
 STABILITY_COOLDOWN = 3.0     # 3.0s hard timestamp cooldown between confirmed signs
 IDLE_TIMEOUT = 0.8           # Seconds of no-hands before clearing buffer
 PREDICTION_LOG_PATH = os.path.join("exports", "onnx_predictions.jsonl")
@@ -34,6 +36,8 @@ class ONNXInferenceEngine:
         label_map_path: str,
         seq_len: int = SEQ_LEN,
         min_confidence: float = MIN_CONFIDENCE,
+        null_min_confidence: float = NULL_MIN_CONFIDENCE,
+        null_penalty_factor: float = NULL_PENALTY_FACTOR,
         voting_buffer_size: int = VOTING_BUFFER_SIZE,
         voting_confirm_threshold: int = VOTING_CONFIRM_THRESHOLD,
         cooldown_seconds: float = STABILITY_COOLDOWN,
@@ -47,6 +51,8 @@ class ONNXInferenceEngine:
         self.input_name = self.session.get_inputs()[0].name
         self.seq_len = seq_len
         self.min_confidence = min_confidence
+        self.null_min_confidence = null_min_confidence
+        self.null_penalty_factor = null_penalty_factor
 
         with open(label_map_path, "r", encoding="utf-8") as f:
             self.label_map: dict[str, int] = json.load(f)
@@ -79,8 +85,8 @@ class ONNXInferenceEngine:
         self.current_top3: list[tuple[str, float]] = []
 
         logger.info(
-            "ONNX CNN-GRU Engine loaded: %d classes, seq_len=%d, min_conf=%.2f, voting=%d/%d, cooldown=%.1fs",
-            self.num_classes, seq_len, min_confidence, voting_confirm_threshold, voting_buffer_size, cooldown_seconds,
+            "ONNX CNN-GRU Engine loaded: %d classes, seq_len=%d, min_conf=%.2f (null_min=%.2f, null_penalty=%.2f), voting=%d/%d, cooldown=%.1fs",
+            self.num_classes, seq_len, min_confidence, null_min_confidence, null_penalty_factor, voting_confirm_threshold, voting_buffer_size, cooldown_seconds,
         )
 
     def add_frame(self, hand_data: dict) -> dict:
@@ -194,6 +200,12 @@ class ONNXInferenceEngine:
 
         try:
             logits = self.session.run(None, {self.input_name: input_tensor})[0]  # (1, num_classes)
+
+            # (3) Null weight penalty: multiply null logit by 0.6 before softmax & argmax
+            null_idx = self.label_map.get("null")
+            if null_idx is not None and logits.shape[1] > null_idx:
+                logits[0, null_idx] *= self.null_penalty_factor
+
             # Softmax
             exp_logits = np.exp(logits - np.max(logits, axis=1, keepdims=True))
             probs = (exp_logits / np.sum(exp_logits, axis=1, keepdims=True))[0]
@@ -211,9 +223,16 @@ class ONNXInferenceEngine:
         best_label = self.idx_to_label.get(best_idx, "unknown")
         best_confidence = float(probs[best_idx])
 
-        # Treat null or low-confidence as "null"
-        if best_label == "null" or best_confidence < self.min_confidence:
-            raw_prediction = "null"
+        # (1) Null confidence threshold: if model predicts null at < 85% confidence, treat as uncertain
+        if best_label == "null":
+            if best_confidence >= self.null_min_confidence:
+                raw_prediction = "null"
+            else:
+                raw_prediction = "uncertain"
+            self._last_prediction = None
+            self._last_confidence = 0.0
+        elif best_confidence < self.min_confidence:
+            raw_prediction = "uncertain"
             self._last_prediction = None
             self._last_confidence = 0.0
         else:
@@ -225,13 +244,13 @@ class ONNXInferenceEngine:
         self.prediction_history.append(raw_prediction)
         self._vote_window.append(probs)
 
-        # Apply 7/10 voting buffer & timestamp cooldown filter
+        # Apply 6/10 voting buffer & timestamp cooldown filter
         self._apply_voting_confirmation()
 
     def _apply_voting_confirmation(self):
         """
         Collects last 10 frames of predictions.
-        Confirms a sign ONLY if the same class appears in >= 7 of 10 frames.
+        Confirms a sign ONLY if the same real class appears in >= 6 of 10 frames.
         Enforces a hard 3.0-second timestamp cooldown using time.time().
         """
         if len(self.prediction_history) < self.voting_buffer_size:
@@ -242,8 +261,8 @@ class ONNXInferenceEngine:
         counts = Counter(self.prediction_history)
         most_common_label, count = counts.most_common(1)[0]
 
-        # Must meet the 7/10 agreement threshold and cannot be 'null'
-        if most_common_label == "null" or count < self.voting_confirm_threshold:
+        # (2) Require 6/10 agreement for real signs only (ignore null & uncertain)
+        if most_common_label in ("null", "uncertain") or count < self.voting_confirm_threshold:
             self.current_prediction = None
             self.current_confidence = 0.0
             self.current_top3 = []
@@ -259,7 +278,7 @@ class ONNXInferenceEngine:
             self.current_top3 = []
             return
 
-        # Passed 7/10 agreement AND 3.0s cooldown -> Confirm sign once!
+        # Passed 6/10 agreement AND 3.0s cooldown -> Confirm sign once!
         avg_probs = np.mean(list(self._vote_window), axis=0)
         c_idx = self.label_map.get(most_common_label, int(np.argmax(avg_probs)))
         confidence = float(avg_probs[c_idx])
