@@ -144,15 +144,15 @@ def main():
         "no":       "No.",
         "please":   "Please.",
         "thankyou": "Thank you!",
-        "water":    "I need water.",
-        "food":     "I need food.",
-        "drink":    "I need a drink.",
+        "water":    "Water.",
+        "food":     "Food.",
+        "drink":    "Drink.",
         "hungry":   "I am hungry.",
-        "home":     "I want to go home.",
-        "sick":     "I am feeling sick.",
+        "home":     "Home.",
+        "sick":     "I feel sick.",
+        "sleep":    "I want to sleep.",
         "where":    "Where are you?",
     }
-    # Note: "mom" and "dad" were removed in Phase 1 (13-class model)
 
     class PhraseBuilder:
         """
@@ -196,9 +196,18 @@ def main():
 
     phrase_builder = PhraseBuilder(sign_map=SIGN_TO_PHRASE, speak_fn=tts_engine.speak)
 
+    _last_sign_confirmed_time = 0.0
+    SIGN_COOLDOWN_SECONDS = 2.0
+
     def on_sign_recognized(raw_sign_label: str):
+        nonlocal _last_sign_confirmed_time
         if session.dataset_mode:
             return
+        now = time.time()
+        if (now - _last_sign_confirmed_time) < SIGN_COOLDOWN_SECONDS:
+            return
+        _last_sign_confirmed_time = now
+
         # 1. Show in conversation immediately so UI feels responsive
         session.add_message("Deaf User", raw_sign_label, source="Sign")
         # 2. Buffer into phrase builder — TTS fires after a natural pause

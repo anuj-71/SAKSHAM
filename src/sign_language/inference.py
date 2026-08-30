@@ -19,9 +19,9 @@ logger = logging.getLogger("ONNXInferenceEngine")
 SEQ_LEN = 30
 FEATURE_DIM = 126            # 21 left hand (x,y,z) + 21 right hand (x,y,z)
 STABILITY_WINDOW = 5         # Number of recent frames for soft-vote stability
-STABILITY_THRESHOLD = 0.65   # Probability threshold to confirm a sign
-MIN_CONFIDENCE = 0.70        # Minimum confidence threshold
-STABILITY_COOLDOWN = 1.2     # Cooldown between consecutive confirmed signs
+STABILITY_THRESHOLD = 0.75   # Probability threshold to confirm a sign
+MIN_CONFIDENCE = 0.75        # Minimum confidence threshold (idle/null filter)
+STABILITY_COOLDOWN = 2.0     # 2.0s hard cooldown between confirmed signs
 IDLE_TIMEOUT = 0.8           # Seconds of no-hands before clearing buffer
 PREDICTION_LOG_PATH = os.path.join("exports", "onnx_predictions.jsonl")
 
@@ -195,8 +195,13 @@ class ONNXInferenceEngine:
         best_label = self.idx_to_label.get(best_idx, "unknown")
         best_confidence = float(probs[best_idx])
 
-        self._last_prediction = best_label
-        self._last_confidence = best_confidence
+        if best_confidence < self.min_confidence:
+            self._last_prediction = None
+            self._last_confidence = 0.0
+            self._last_top3 = []
+        else:
+            self._last_prediction = best_label
+            self._last_confidence = best_confidence
 
         # Soft voting stability filter
         self._apply_stability(probs)
@@ -213,16 +218,32 @@ class ONNXInferenceEngine:
         label = self.idx_to_label.get(best_idx, "unknown")
 
         now = time.time()
-        if confidence >= self.min_confidence:
-            if label != self.current_prediction or (now - self._last_confirmed_time) >= self.cooldown_seconds:
-                self.current_prediction = label
-                self.current_confidence = confidence
-                self.current_top3 = [
-                    (self.idx_to_label.get(int(i), f"class_{i}"), float(avg_probs[i]))
-                    for i in np.argsort(avg_probs)[-3:][::-1]
-                ]
-                self._last_confirmed_time = now
-                logger.info("Confirmed Sign: %s (confidence=%.1f%%)", label, confidence * 100.0)
+
+        # Fix 2: Idle / Null detection — if all class confidences < 0.75, treat as no sign
+        if confidence < self.min_confidence:
+            self.current_prediction = None
+            self.current_confidence = 0.0
+            self.current_top3 = []
+            return
+
+        # Fix 1: Hard 2.0-second cooldown — block all confirmations during cooldown period
+        if (now - self._last_confirmed_time) < self.cooldown_seconds:
+            self.current_prediction = None
+            self.current_confidence = 0.0
+            self.current_top3 = []
+            return
+
+        # Confirm sign
+        self.current_prediction = label
+        self.current_confidence = confidence
+        self.current_top3 = [
+            (self.idx_to_label.get(int(i), f"class_{i}"), float(avg_probs[i]))
+            for i in np.argsort(avg_probs)[-3:][::-1]
+        ]
+        self._last_confirmed_time = now
+        self._vote_window.clear()
+        self.frame_buffer.clear()
+        logger.info("Confirmed Sign: %s (confidence=%.1f%%)", label, confidence * 100.0)
 
     def _build_state(self) -> dict:
         return {

@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Model configuration constants
 SEQUENCE_LENGTH = 30
 INPUT_FEATURES = 126       # 21 Left Hand (x,y,z) + 21 Right Hand (x,y,z)
-CONFIDENCE_THRESHOLD = 0.70
+CONFIDENCE_THRESHOLD = 0.75
 
 # Model artefacts live in the top-level models/ directory
 MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / "model.onnx"
@@ -30,16 +30,16 @@ class SignLanguageEngine:
         self.dataset_manager = DatasetManager()
         self.on_sign_recognized = on_sign_recognized
         self.confidence_threshold = CONFIDENCE_THRESHOLD
-        
-        self.inference = self._init_or_none()
-        
+        self.cooldown_seconds = 2.0
+        self._last_sign_time = 0.0
         self.sequence_buffer = deque(maxlen=SEQUENCE_LENGTH)
         self.sign_cooldowns: Dict[str, float] = {}
-        self.cooldown_seconds = 1.5
         self.current_candidate = None
         self.candidate_frames = 0
         self.frames_to_confirm = 4
         self._last_notified_sign: Optional[str] = None
+
+        self.inference = self._init_or_none()
 
     def _init_or_none(self) -> Optional[ONNXInferenceEngine]:
         try:
@@ -49,6 +49,7 @@ class SignLanguageEngine:
                     label_map_path=str(LABEL_MAP_PATH),
                     seq_len=SEQUENCE_LENGTH,
                     min_confidence=CONFIDENCE_THRESHOLD,
+                    cooldown_seconds=self.cooldown_seconds,
                 )
                 logging.info("ONNX CNN-GRU inference engine loaded (%s, %d classes)",
                              MODEL_PATH.name, engine.num_classes)
@@ -93,12 +94,17 @@ class SignLanguageEngine:
             # 3. ONNX GRU inference (if model loaded)
             if self.inference is not None:
                 state = self.inference.add_frame(hand_data)
-                # Fire callback only once per new confirmed prediction
-                new_pred = state["prediction"]
-                if new_pred and new_pred != self._last_notified_sign and self.on_sign_recognized:
-                    self._last_notified_sign = new_pred
-                    self.on_sign_recognized(new_pred)
-                elif new_pred is None:
+                # Fire callback only once per confirmed prediction with 2.0s cooldown
+                new_pred = state.get("prediction")
+                now = time.time()
+                if new_pred:
+                    if (now - self._last_sign_time) >= self.cooldown_seconds:
+                        self._last_sign_time = now
+                        self._last_notified_sign = new_pred
+                        if self.on_sign_recognized:
+                            self.on_sign_recognized(new_pred)
+                        self.inference.current_prediction = None
+                else:
                     self._last_notified_sign = None
             else:
                 # Fallback: legacy heuristic
