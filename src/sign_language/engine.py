@@ -11,30 +11,34 @@ from src.sign_language.inference import ONNXInferenceEngine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Model artefacts live in the top-level models/ directory (consolidated in cleanup).
+# Model configuration constants
+SEQUENCE_LENGTH = 30
+INPUT_FEATURES = 126       # 21 Left Hand (x,y,z) + 21 Right Hand (x,y,z)
+CONFIDENCE_THRESHOLD = 0.70
+
+# Model artefacts live in the top-level models/ directory
 MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / "model.onnx"
 LABEL_MAP_PATH = Path(__file__).resolve().parents[2] / "models" / "label_map.json"
 
 class SignLanguageEngine:
     """
     Core engine for processing hand tracking data and recognizing sign language.
-    Uses ONNX GRU model for inference with stability filtering.
+    Uses ONNX CNN-GRU model for real-time inference with stability filtering.
     """
     def __init__(self, on_sign_recognized: Optional[Callable[[str], None]] = None):
         self.tracker = HandTracker()
         self.dataset_manager = DatasetManager()
         self.on_sign_recognized = on_sign_recognized
+        self.confidence_threshold = CONFIDENCE_THRESHOLD
         
         self.inference = self._init_or_none()
         
-        # Legacy fields for dataset recording compatibility
-        self.sequence_buffer = deque(maxlen=30)
+        self.sequence_buffer = deque(maxlen=SEQUENCE_LENGTH)
         self.sign_cooldowns: Dict[str, float] = {}
-        self.cooldown_seconds = 2.5
-        self.confidence_threshold = 0.75
+        self.cooldown_seconds = 1.5
         self.current_candidate = None
         self.candidate_frames = 0
-        self.frames_to_confirm = 5
+        self.frames_to_confirm = 4
         self._last_notified_sign: Optional[str] = None
 
     def _init_or_none(self) -> Optional[ONNXInferenceEngine]:
@@ -43,8 +47,10 @@ class SignLanguageEngine:
                 engine = ONNXInferenceEngine(
                     model_path=str(MODEL_PATH),
                     label_map_path=str(LABEL_MAP_PATH),
+                    seq_len=SEQUENCE_LENGTH,
+                    min_confidence=CONFIDENCE_THRESHOLD,
                 )
-                logging.info("ONNX GRU inference engine loaded (%s, %d classes)",
+                logging.info("ONNX CNN-GRU inference engine loaded (%s, %d classes)",
                              MODEL_PATH.name, engine.num_classes)
                 return engine
             else:
