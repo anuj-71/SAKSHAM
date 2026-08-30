@@ -28,26 +28,21 @@ class UIRenderer:
         self.height = height
 
         # ── Layout constants ──────────────────────────────────────────
-        self.header_h = 60
-        self.status_h = 36
-        self.input_h = 50
-        self.bottom_h = 300
+        self.header_h = 56
+        self.bottom_bar_h = 80  # Space reserved for bottom floating pill
+        self.bottom_h = 240
 
         self.conv_y = self.header_h
-        
-        self.status_y = self.height - self.status_h
-        self.input_y = self.status_y - self.input_h
-        self.bottom_y = self.input_y - self.bottom_h
-
+        self.bottom_y = self.height - self.bottom_bar_h - self.bottom_h
         self.conv_h = self.bottom_y - self.conv_y
 
-        # Bottom section split: 65% live transcript, 35% camera + stats
-        self.live_panel_w = int(self.width * 0.65)
+        # Bottom section split: 60% conversation/empty, 40% camera + stats
+        self.live_panel_w = int(self.width * 0.60)
         self.right_panel_x = self.live_panel_w
 
-        # Camera preview – fills most of the right panel
-        self.cam_h = 225
-        self.cam_w = int(self.cam_h * 16 / 9)  # 400px
+        # Camera preview – fills right side of the bottom panel
+        self.cam_h = 200
+        self.cam_w = int(self.cam_h * 16 / 9)  # ~355px
 
         # Chat bubble max width: 80% of conversation area width
         self.max_bubble_w_ratio = 0.80
@@ -61,14 +56,14 @@ class UIRenderer:
             font_bold_path = "arialbd.ttf"
 
         try:
-            self.font_header = ImageFont.truetype(font_bold_path, 24)
-            self.font_subheader = ImageFont.truetype(font_path, 14)
-            self.font_body = ImageFont.truetype(font_path, 18)
-            self.font_body_bold = ImageFont.truetype(font_bold_path, 18)
-            self.font_small = ImageFont.truetype(font_path, 14)
-            self.font_small_bold = ImageFont.truetype(font_bold_path, 14)
-            self.font_live = ImageFont.truetype(font_path, 20)
-            self.font_live_state = ImageFont.truetype(font_bold_path, 16)
+            self.font_header = ImageFont.truetype(font_bold_path, 22)
+            self.font_subheader = ImageFont.truetype(font_path, 13)
+            self.font_body = ImageFont.truetype(font_path, 17)
+            self.font_body_bold = ImageFont.truetype(font_bold_path, 17)
+            self.font_small = ImageFont.truetype(font_path, 13)
+            self.font_small_bold = ImageFont.truetype(font_bold_path, 13)
+            self.font_live = ImageFont.truetype(font_path, 18)
+            self.font_live_state = ImageFont.truetype(font_bold_path, 15)
         except IOError:
             fallback = ImageFont.load_default()
             self.font_header = fallback
@@ -89,45 +84,21 @@ class UIRenderer:
                fps: float,
                scroll_offset: int = 0,
                hand_data: Optional[Dict] = None) -> cv2.Mat:
-        """Renders the entire SAKSHAM UI and returns a BGR numpy frame."""
+        """Renders the SAKSHAM UI base canvas and returns a BGR numpy frame."""
 
-        # 1. Base canvas (OpenCV / numpy) for backgrounds & camera feed
+        # 1. Base canvas
         ui_frame = np.full((self.height, self.width, 3), config.COLOR_BG, dtype=np.uint8)
 
         # Header background
         cv2.rectangle(ui_frame, (0, 0), (self.width, self.header_h), (20, 20, 20), -1)
         cv2.line(ui_frame, (0, self.header_h), (self.width, self.header_h), config.COLOR_DIVIDER, 1)
 
-        # Bottom section divider
+        # Bottom section divider (above camera & stats)
         cv2.line(ui_frame, (0, self.bottom_y), (self.width, self.bottom_y), config.COLOR_DIVIDER, 1)
 
-        # Input Bar divider
-        cv2.line(ui_frame, (0, self.input_y), (self.width, self.input_y), config.COLOR_DIVIDER, 1)
-
-        # Vertical divider in bottom section (live transcript | camera+stats)
-        cv2.line(ui_frame, (self.live_panel_w, self.bottom_y),
-                 (self.live_panel_w, self.input_y), config.COLOR_DIVIDER, 1)
-
-        # Status bar background
-        cv2.rectangle(ui_frame, (0, self.status_y), (self.width, self.height), (20, 20, 20), -1)
-        cv2.line(ui_frame, (0, self.status_y), (self.width, self.status_y), config.COLOR_DIVIDER, 1)
-
-        # Live Transcript panel – slightly lighter background
-        cv2.rectangle(ui_frame, (0, self.bottom_y + 1),
-                      (self.live_panel_w - 1, self.input_y - 1), (35, 35, 35), -1)
-
-        # Input bar background
-        bg_input = (45, 45, 55) if getattr(session, 'is_typing_focused', False) else (30, 30, 35)
-        cv2.rectangle(ui_frame, (0, self.input_y + 1),
-                      (self.width, self.status_y - 1), bg_input, -1)
-                      
-        # Send button background
-        cv2.rectangle(ui_frame, (self.width - 100, self.input_y + 1),
-                      (self.width, self.status_y - 1), (60, 130, 60), -1)
-
-        # Camera preview (right panel, top-right)
+        # Camera preview (right panel)
         cam_x = self.right_panel_x + 20
-        cam_y = self.bottom_y + 15
+        cam_y = self.bottom_y + 12
         if camera_frame is not None:
             # 1. Draw MediaPipe hand skeleton directly on camera_frame (full size)
             if hand_data:
@@ -159,32 +130,43 @@ class UIRenderer:
         pil_img = Image.fromarray(img_rgb)
         draw = ImageDraw.Draw(pil_img, 'RGBA')
 
-        self._draw_header(draw)
+        self._draw_header(draw, fps, session.mic_state, camera_frame is not None)
         self._draw_conversation(draw, session, scroll_offset)
-        self._draw_live_transcript(draw, session)
-        self._draw_input_bar(draw, session)
         self._draw_session_info(draw, session, cam_x, cam_y)
         self._draw_dataset_panel(draw, session, cam_x, cam_y + self.cam_h + 10)
-        self._draw_status_bar(draw, fps, session.mic_state, camera_frame is not None)
         self._draw_toast(draw, session)
 
         # Convert back to BGR
         return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
     # ──────────────────────────────────────────────────────────────────
-    #  Header
+    #  Header (with clean status chips and shortcuts)
     # ──────────────────────────────────────────────────────────────────
-    def _draw_header(self, draw: ImageDraw.ImageDraw):
+    def _draw_header(self, draw: ImageDraw.ImageDraw, fps: float, mic_state: str, cam_ok: bool):
         draw.text((24, 12), "SAKSHAM V1",
                   font=self.font_header, fill=self._bgr_to_rgb(config.COLOR_ACCENT))
-        draw.text((24, 40), "AI Communication Assistant",
+        draw.text((24, 38), "AI Communication Assistant",
                   font=self.font_subheader, fill=self._bgr_to_rgb(config.COLOR_TEXT_SECONDARY))
 
-        hint = "[M] Mic  [K] Dataset  [J/L] Label  [U/I] Signer  [R] Rec  [A/X] Review  [E] Dataset Export"
+        # Status indicator chips in header
+        status_x = 240
+        cam_col = config.COLOR_SUCCESS if cam_ok else config.COLOR_WARNING
+        draw.text((status_x, 22), f"Camera: {'OK' if cam_ok else 'OFF'}",
+                  font=self.font_small, fill=self._bgr_to_rgb(cam_col))
+
+        ready_text = f"Dataset: {self._last_session_dataset_label}" if getattr(self, "_last_session_dataset_mode", False) else "System Ready"
+        draw.text((status_x + 110, 22), ready_text,
+                  font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_TEXT_PRIMARY))
+
+        if config.DEV_MODE:
+            draw.text((status_x + 230, 22), f"FPS: {fps:.1f}",
+                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_WARNING))
+
+        hint = "[M] Mic  [F] Fullscreen  [K] Dataset  [J/L] Label  [U/I] Signer  [R] Rec  [A/X] Review  [E] Export"
         if not getattr(self, "_last_session_dataset_mode", False):
-            hint = "[M] Mic  [K] Dataset  [C] Clear  [E] Export  [O] Open Exports  [D] Dev Mode"
+            hint = "[M] Mic  [F] Fullscreen  [C] Clear  [E] Export  [O] Exports  [D] Dev Mode"
         _, _, w, _ = draw.textbbox((0, 0), hint, font=self.font_small)
-        draw.text((self.width - w - 24, 24), hint,
+        draw.text((self.width - w - 24, 22), hint,
                   font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_TEXT_SECONDARY))
 
     # ──────────────────────────────────────────────────────────────────
@@ -267,146 +249,7 @@ class UIRenderer:
     # ──────────────────────────────────────────────────────────────────
     #  Live Transcript panel  (bottom-left, dedicated area)
     # ──────────────────────────────────────────────────────────────────
-    def _draw_live_transcript(self, draw: ImageDraw.ImageDraw,
-                              session: ConversationSession):
-        px = 24
-        py = self.bottom_y + 12
-
-        # Panel title
-        draw.text((px, py), "Live Transcript",
-                  font=self.font_small_bold,
-                  fill=self._bgr_to_rgb(config.COLOR_TEXT_SECONDARY))
-
-        py += 24
-
-        mic = session.mic_state
-        draft = session.draft_message or ""
-
-        if mic == "Listening":
-            # Mic icon + state
-            state_text = "\U0001f3a4  Listening..."
-            state_color = self._bgr_to_rgb(config.COLOR_WARNING)
-            draw.text((px, py), state_text, font=self.font_live_state, fill=state_color)
-            py += 28
-
-            # Show currently transcribed/typed text or draft
-            display_str = session.typing_buffer or draft
-            if display_str and display_str != "...":
-                wrapped = textwrap.fill(display_str, width=70)
-                draw.text((px, py), wrapped, font=self.font_live, fill=(220, 220, 220))
-            else:
-                draw.text((px, py), "Speak now...",
-                          font=self.font_live, fill=(130, 130, 130))
-
-        elif mic == "Processing":
-            state_text = "\u23F3  Processing..."
-            state_color = self._bgr_to_rgb(config.COLOR_SUCCESS)
-            draw.text((px, py), state_text, font=self.font_live_state, fill=state_color)
-            py += 28
-            if draft:
-                wrapped = textwrap.fill(draft, width=70)
-                draw.text((px, py), wrapped, font=self.font_live, fill=(180, 180, 180))
-
-        elif mic == "Error":
-            draw.text((px, py), "\u274C  Microphone Error",
-                      font=self.font_live_state, fill=(200, 60, 60))
-
-        else:  # Mic Off / Idle
-            draw.text((px, py), "\u23F8  Mic Off",
-                      font=self.font_live_state, fill=(120, 120, 120))
-            py += 28
-            draw.text((px, py), "Enable the mic to start speech input.",
-                      font=self.font_live, fill=(100, 100, 100))
-
-        # ── Live Sign Prediction & Raw Frame-by-Frame HUD ──
-        py += 16
-        raw_top3 = getattr(session, "raw_top3", [])
-        vote_size = getattr(session, "vote_window_size", 0)
-        vote_cap = getattr(session, "vote_window_capacity", 7)
-        buf_filled = getattr(session, "buffer_progress", 0)
-
-        # Show raw per-frame top-3 output (updates every frame, even below stability threshold)
-        if raw_top3:
-            top3_str = " | ".join([f"{l}: {c:.1%}" for l, c in raw_top3])
-            draw.text((px, py), f"Raw Live Frame (Top 3): {top3_str}",
-                      font=self.font_small_bold, fill=self._bgr_to_rgb(config.COLOR_ACCENT))
-            py += 18
-            draw.text((px, py), f"Stability Window: {vote_size}/{vote_cap} frames  |  Buffer: {buf_filled}/64",
-                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_TEXT_SECONDARY))
-            py += 20
-        elif buf_filled < 64:
-            draw.text((px, py), f"\u23F3  Buffering frames... ({buf_filled}/64)",
-                      font=self.font_small, fill=(130, 130, 130))
-            py += 20
-
-        # Confirmed prediction (after stability voting)
-        pred = getattr(session, "live_prediction", None)
-        conf = getattr(session, "live_confidence", 0.0)
-        if pred:
-            color = self._bgr_to_rgb(config.COLOR_SUCCESS)
-            pred_text = f"\U0001f590  Confirmed: {pred} ({conf:.0%})"
-            draw.text((px, py), pred_text, font=self.font_live_state, fill=color)
-            py += 24
-        elif buf_filled >= 64:
-            draw.text((px, py), "\U0001f3af  Voting for stable prediction...",
-                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_WARNING))
-            py += 20
-            py += 20
-
-        if session.dataset_mode:
-            py += 54
-            info_lines = [
-                f"Dataset Mode: ON",
-                f"Label: {session.current_dataset_label}",
-                f"Signer: {session.current_signer_id}",
-                f"Status: {session.dataset_status}",
-            ]
-            live_visibility = getattr(session, "live_hand_visibility", {})
-            info_lines.append(
-                "Live Visibility: "
-                f"L {'ON' if live_visibility.get('left_visible') else 'OFF'} | "
-                f"R {'ON' if live_visibility.get('right_visible') else 'OFF'} | "
-                f"Hands {live_visibility.get('hands_present', 0)}"
-            )
-
-            live_feedback = getattr(session, "dataset_live_feedback", None)
-            if live_feedback:
-                info_lines.append(
-                    f"Recording: {live_feedback['frame_count']} frames | "
-                    f"Active {live_feedback['active_hand_ratio']:.0%} | "
-                    f"Both {live_feedback['both_hands_ratio']:.0%}"
-                )
-                info_lines.append(f"Feedback: {live_feedback['feedback']}")
-
-            statistics = getattr(session, "dataset_insights", {}).get("statistics", {})
-            targets = statistics.get("targets", {})
-            progress = statistics.get("progress", {})
-            if statistics:
-                info_lines.append(
-                    f"Progress: {statistics.get('total_clips', 0)}/{targets.get('target_dataset_size', 0)} clips | "
-                    f"{statistics.get('unique_signer_count', 0)}/{targets.get('minimum_signers', 0)} signers"
-                )
-                info_lines.append(
-                    "Visibility Avg: "
-                    f"Active {statistics.get('hand_visibility_metrics', {}).get('active_hand_avg', 0.0):.0%} | "
-                    f"Both {statistics.get('hand_visibility_metrics', {}).get('both_hands_avg', 0.0):.0%} | "
-                    f"Progress {progress.get('clips_progress_ratio', 0.0):.0%}"
-                )
-            if session.dataset_review_summary:
-                info_lines.append("Review: [A] Accept  [X] Reject  [R] Re-record")
-            else:
-                info_lines.append("Controls: [J/L] Label  [U/I] Signer  [R] Start/Stop  [E] Export")
-
-            for line in info_lines:
-                py = self._draw_wrapped_line(
-                    draw,
-                    line,
-                    px,
-                    py,
-                    self.live_panel_w - (px * 2),
-                    self.font_small,
-                    self._bgr_to_rgb(config.COLOR_TEXT_SECONDARY),
-                )
+    # (Removed) _draw_live_transcript — replaced by floating LiveTranscriptWidget
 
     # ──────────────────────────────────────────────────────────────────
     #  Session Info panel  (bottom-right, below camera)
@@ -554,82 +397,6 @@ class UIRenderer:
                 self.font_small,
                 self._bgr_to_rgb(config.COLOR_TEXT_SECONDARY),
             )
-
-    # ──────────────────────────────────────────────────────────────────
-    #  Input Bar
-    # ──────────────────────────────────────────────────────────────────
-    def _draw_input_bar(self, draw: ImageDraw.ImageDraw, session: ConversationSession):
-        is_focused = getattr(session, 'is_typing_focused', False)
-        buf = getattr(session, 'typing_buffer', '')
-        
-        cursor = "|" if is_focused and int(time.time() * 2) % 2 == 0 else ""
-        display_text = buf + cursor
-        
-        # Draw placeholder or typed text
-        if not display_text and not is_focused:
-            draw.text((24, self.input_y + 14), "Type message here... (Click to focus or press ENTER)", font=self.font_body, fill=(150, 150, 150))
-        else:
-            draw.text((24, self.input_y + 14), display_text, font=self.font_body, fill=(255, 255, 255))
-            
-        # Draw Mic toggle and Send buttons
-        mic_w = 100
-        mic_x1 = self.width - 100 - 10 - mic_w
-        mic_x2 = mic_x1 + mic_w
-        mic_y1 = self.input_y + 1
-        mic_y2 = self.status_y - 1
-        mic_fill = (45, 140, 70) if session.mic_enabled else (90, 60, 60)
-        mic_text = "Mic On" if session.mic_enabled else "Mic Off"
-        draw.rounded_rectangle([mic_x1, mic_y1, mic_x2, mic_y2], radius=6, fill=mic_fill)
-        _, _, lw, lh = draw.textbbox((0, 0), mic_text, font=self.font_body_bold)
-        lx = mic_x1 + (mic_w - lw) // 2
-        ly = self.input_y + 25 - lh // 2
-        draw.text((lx, ly), mic_text, font=self.font_body_bold, fill=(255, 255, 255))
-
-        # Send button
-        _, _, w, h = draw.textbbox((0, 0), "Send", font=self.font_body_bold)
-        sx = self.width - 50 - w // 2
-        sy = self.input_y + 25 - h // 2
-        draw.text((sx, sy), "Send", font=self.font_body_bold, fill=(255, 255, 255))
-
-    # ──────────────────────────────────────────────────────────────────
-    #  Status bar
-    # ──────────────────────────────────────────────────────────────────
-    def _draw_status_bar(self, draw: ImageDraw.ImageDraw,
-                         fps: float, mic_state: str, cam_ok: bool):
-        ty = self.status_y + 9
-        cx = 24
-
-        # Mic state indicator
-        mic_colors = {
-            "Mic Off": config.COLOR_TEXT_SECONDARY,
-            "Listening": config.COLOR_WARNING,
-            "Processing": config.COLOR_SUCCESS,
-            "Error": (0, 0, 200),
-        }
-        mic_color = mic_colors.get(mic_state, config.COLOR_TEXT_SECONDARY)
-        draw.text((cx, ty), f"Mic: {mic_state}",
-                  font=self.font_small, fill=self._bgr_to_rgb(mic_color))
-        cx += 140
-
-        # Camera
-        cam_color = config.COLOR_SUCCESS if cam_ok else config.COLOR_WARNING
-        draw.text((cx, ty), f"Camera: {'OK' if cam_ok else 'OFF'}",
-                  font=self.font_small, fill=self._bgr_to_rgb(cam_color))
-        cx += 110
-
-        # Ready
-        ready_text = "Dataset Ready" if getattr(self, "_last_session_dataset_mode", False) else "System Ready"
-        draw.text((cx, ty), ready_text,
-                  font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_TEXT_PRIMARY))
-
-        if hasattr(self, "_last_session_dataset_mode") and self._last_session_dataset_mode:
-            draw.text((cx + 120, ty), f"Dataset: {self._last_session_dataset_label}",
-                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_WARNING))
-
-        # Dev Mode extras
-        if config.DEV_MODE:
-            draw.text((cx + 140, ty), f"DEV | FPS: {fps:.1f}",
-                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_WARNING))
 
     # ──────────────────────────────────────────────────────────────────
     #  Toast notification

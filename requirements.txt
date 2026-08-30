@@ -28,3 +28,6 @@ pygame>=2.5.0           # Audio playback
 # DEPRECATED (kept for backward compatibility, remove after migration validated):
 # SpeechRecognition>=3.10.0  # Was used for Google Web Speech API
 # webrtcvad-wheels>=2.0.0    # Was used for energy-based VAD
+groq
+python-dotenv
+SpeechRecognition>=3.10.0

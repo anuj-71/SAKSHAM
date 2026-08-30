@@ -50,6 +50,12 @@ venv.bak/
 *.tar.gz
 SAKSHAM_DATASET/
 SAKSHAM-V1/
+dataset/accepted/*
+dataset/raw/*
+dataset/rejected/*
+dataset/processed/*
+dataset/metadata/*
+!dataset/**/.gitkeep
 
 # ── Trained model weights (large binary files) ───────────────────────────────
 models/checkpoints/

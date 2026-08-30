@@ -1,6 +1,14 @@
 import os
 import sys
 import warnings
+import ctypes
+
+# Enable high-DPI awareness on Windows to prevent OS bitmap blurring
+try:
+    if sys.platform == "win32":
+        ctypes.windll.user32.SetProcessDPIAware()
+except Exception:
+    pass
 
 # ── Suppress noisy third-party startup banners ─────────────────────────────
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"   # Hides pygame banner & community message
@@ -19,6 +27,7 @@ from src.config import settings
 from src.speech.tts_engine import PyTTSx3Engine
 from src.ui.renderer import UIRenderer
 from src.session_manager import ConversationSession
+from src.ui.live_transcript_widget import LiveTranscriptWidget
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 # Console: clean, short format  |  File: full timestamped log
@@ -39,7 +48,15 @@ for _noisy in ("absl", "onnxruntime", "mediapipe", "tensorflow", "STT-Listener",
 logger = logging.getLogger(__name__)
 
 # Speech engine selection based on settings with graceful fallback
-if settings.STT_BACKEND == "whisper":
+if settings.STT_BACKEND == "groq":
+    try:
+        from src.speech.speech_engine_groq import GroqHybridSpeechEngine as SpeechEngine
+        logger.info("STT backend: Groq hybrid (Groq → Google fallback)")
+    except Exception as e:
+        logger.error(f"Groq engine import failed: {e}. Falling back to Google.")
+        from src.speech.speech_engine import SpeechEngine
+        settings.STT_BACKEND = "google"
+elif settings.STT_BACKEND == "whisper":
     try:
         from src.speech.speech_engine_whisper import WhisperSpeechEngine as SpeechEngine
         logger.info(f"Using Whisper STT (model={settings.WHISPER_MODEL_SIZE}, device={settings.WHISPER_DEVICE})")
@@ -55,32 +72,28 @@ else:
 # Global state for OpenCV callbacks
 scroll_offset = 0
 global_session = None
+global_live_widget = None
+global_toggle_mic_fn = None
 
 def mouse_callback(event, x, y, flags, param):
-    global scroll_offset, global_session
+    global scroll_offset, global_session, global_live_widget, global_toggle_mic_fn
     if event == cv2.EVENT_MOUSEWHEEL:
         if flags > 0:
             scroll_offset += 1  # Scroll Up
         else:
             scroll_offset -= 1  # Scroll Down
     elif event == cv2.EVENT_LBUTTONDOWN:
-        if global_session:
-            # Check if clicked in Input Bar (height - 86 to height - 36)
-            h = config.FRAME_HEIGHT
-            w = config.FRAME_WIDTH
-            if h - 86 <= y <= h - 36:
-                mic_x1 = w - 210
-                mic_x2 = w - 110
-                if x >= w - 100:
-                    if global_session.typing_buffer.strip():
-                        global_session.add_message("Hearing Person", global_session.typing_buffer.strip(), source="Typed")
-                    global_session.typing_buffer = ""
-                    global_session.is_typing_focused = False
-                elif mic_x1 <= x <= mic_x2:
-                    global_session.request_mic_toggle = True
-                    global_session.is_typing_focused = False
-                else:
-                    global_session.is_typing_focused = True
+        if global_live_widget and global_session:
+            zone = global_live_widget.handle_click(x, y)
+            if zone == 'mic':
+                if global_toggle_mic_fn:
+                    global_toggle_mic_fn()
+                global_session.is_typing_focused = False
+            elif zone == 'plus':
+                global_session.clear()
+                global_session.is_typing_focused = False
+            elif zone == 'text':
+                global_session.is_typing_focused = True
             else:
                 global_session.is_typing_focused = False
 
@@ -105,6 +118,7 @@ def main():
         sys.exit(1)
 
     ui = UIRenderer(width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT)
+    live_widget = LiveTranscriptWidget(bar_height=80)
     
     # ── Text-to-Speech Engine ──
     def on_tts_start():
@@ -218,8 +232,20 @@ def main():
         else:
             session.set_draft("")
 
-    # Instantiate speech engine with appropriate parameters based on backend
-    if settings.STT_BACKEND == "whisper":
+    if settings.STT_BACKEND == "groq":
+        speech_engine = SpeechEngine(
+            api_key=settings.GROQ_API_KEY,
+            callback=lambda text: (on_speech_text(text), live_widget.set_final(text)),
+            preview_callback=lambda text: (session.set_draft(text), live_widget.set_preview(text))
+        )
+        # Monkeypatch Groq engine to support UI state and is_running property
+        speech_engine.is_running = property(lambda self: getattr(self, "running", False))
+        original_update_state = speech_engine.update_state
+        def _patched_update_state(state):
+            original_update_state(state)
+            on_speech_state(state)
+        speech_engine.update_state = _patched_update_state
+    elif settings.STT_BACKEND == "whisper":
         speech_engine = SpeechEngine(
             on_text_callback=on_speech_text,
             on_state_callback=on_speech_state,
@@ -233,6 +259,10 @@ def main():
             on_state_callback=on_speech_state,
         )
 
+    # Microphone starts in OFF state - only starts when user clicks mic icon or presses [M]
+    session.mic_enabled = False
+    session.mic_state = "Mic Off"
+
 
     def toggle_mic():
         if session.mic_enabled:
@@ -240,11 +270,13 @@ def main():
             session.mic_enabled = False
             session.mic_state = "Mic Off"
             session.set_draft("")
+            live_widget.clear()
             session.set_toast("Microphone Off")
             return
 
         speech_engine.start()
-        if speech_engine.is_running:
+        is_running = getattr(speech_engine, "is_running", getattr(speech_engine, "running", False))
+        if is_running:
             session.mic_enabled = True
             session.set_toast("Microphone On")
         else:
@@ -330,16 +362,23 @@ def main():
         refresh_dataset_insights()
         session.set_toast(f"Dataset exported: {len(exported_files)} files", duration=4.0)
 
+    # Bind global references for mouse interaction
+    global global_live_widget, global_toggle_mic_fn
+    global_live_widget = live_widget
+    global_toggle_mic_fn = toggle_mic
+
     main_fps = 0.0
     ema_alpha = 0.1
     elapsed_time = 1.0 / config.TARGET_FPS
 
+    # Window initialization - Launch Fullscreen
     window_name = "SAKSHAM V2 - AI Communication Assistant"
-    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    is_fullscreen = True
     cv2.setMouseCallback(window_name, mouse_callback)
 
-    logging.info("Main loop active. Press 'q' / ESC to quit, 'd' to toggle DEV MODE.")
-
+    logging.info("Main loop active. Press 'q' / ESC to quit, 'f' to toggle Fullscreen, 'd' to toggle DEV MODE.")
 
     try:
         while True:
@@ -404,6 +443,7 @@ def main():
             )
 
             # ── 4. Display ───────────────────────────────────────────
+            annotated_frame = live_widget.draw(annotated_frame, session=session, mic_enabled=session.mic_enabled)
             cv2.imshow(window_name, annotated_frame)
             key = cv2.waitKey(1) & 0xFF
 
@@ -424,8 +464,32 @@ def main():
                     if key in (ord('q'), ord('Q'), 27):
                         logging.info("Quit key pressed.")
                         break
+                    elif key in (ord('f'), ord('F')):
+                        is_fullscreen = not is_fullscreen
+                        if is_fullscreen:
+                            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                            session.set_toast("Fullscreen: ON")
+                        else:
+                            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+                            session.set_toast("Fullscreen: OFF")
                     elif key in (ord('m'), ord('M')):
                         toggle_mic()
+                    elif key == ord(' '):
+                        # Push-to-talk via SPACE
+                        try:
+                            if hasattr(speech_engine, '_capturing') and not getattr(speech_engine, '_capturing'):
+                                if hasattr(speech_engine, 'push_start'):
+                                    speech_engine.push_start()
+                                    live_widget.set_preview("🎤 Listening...")
+                                else:
+                                    toggle_mic()
+                            else:
+                                if hasattr(speech_engine, 'push_stop'):
+                                    speech_engine.push_stop()
+                                else:
+                                    toggle_mic()
+                        except Exception:
+                            pass
                     elif key in (ord('k'), ord('K')):
                         toggle_dataset_mode()
                     elif key in (ord('d'), ord('D')):

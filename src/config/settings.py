@@ -24,12 +24,16 @@ DEV_MODE = False             # Press 'd' to toggle Developer Mode
 SHOW_FPS = False             # Controlled by Dev Mode
 SHOW_TRACKING_LANDMARKS = False # Controlled by Dev Mode
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 # Speech Recognition Settings
-STT_BACKEND = "whisper"      # "whisper" (local Faster-Whisper) or "google" (Google Web Speech API)
-                             # Recommended: "whisper" for lower latency, no network dependency
-WHISPER_MODEL_SIZE = "base"  # "tiny", "base", "small" (base = best speed/accuracy tradeoff for CPU)
-WHISPER_DEVICE = "cpu"       # "cpu" or "cuda" (GPU requires CUDA-capable GPU)
-WHISPER_COMPUTE_TYPE = "int8" # "int8" (quantized for CPU) or "float32" (full precision)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+STT_BACKEND = os.getenv("STT_BACKEND", "groq")
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
 # Styling & Theme (Accessibility First - High Contrast Dark Mode BGR Format)
 COLOR_BG = (30, 30, 30)            # Dark grey background
