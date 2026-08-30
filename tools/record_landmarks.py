@@ -33,10 +33,9 @@ logging.basicConfig(
 log = logging.getLogger("HolisticLandmarkRecorder")
 
 # ---------------------------------------------------------------------------
-# 13 Target Sign Classes + 1 Null Class & Performance Instructions
+# 13 Target Sign Classes & Performance Instructions
 # ---------------------------------------------------------------------------
 SIGN_INSTRUCTIONS: Dict[str, str] = {
-    "null": "Do random non-signs: wave loosely, open palm, move hand randomly, transition between positions. Do NOT do any real sign.",
     "bye": "Open hand, wave side to side",
     "drink": "Curve hand like holding a cup, tilt toward mouth",
     "food": "Bring fingertips to lips, tap twice",

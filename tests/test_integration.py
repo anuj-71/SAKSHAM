@@ -65,8 +65,9 @@ def test_label_map_no_mom_dad():
     label_map = engine.inference.label_map
     assert "mom" not in label_map, "'mom' found in label map: removal incomplete"
     assert "dad" not in label_map, "'dad' found in label map: removal incomplete"
-    assert "water" not in label_map, "'water' found in label map: Step 1 removal incomplete"
-    assert "null" in label_map, "'null' class missing from label map"
+    assert "water" not in label_map, "'water' found in label map: removal incomplete"
+    assert "null" not in label_map, "'null' found in label map: null removal incomplete"
+    assert len(label_map) == 13, f"Expected 13 classes, got {len(label_map)}"
 
 
 @_SKIP_NO_MODEL

@@ -97,7 +97,7 @@ class SignLanguageEngine:
                 # Fire callback only once per confirmed prediction with 3.0s cooldown
                 new_pred = state.get("prediction")
                 now = time.time()
-                if new_pred and new_pred != "null":
+                if new_pred:
                     if (now - self._last_sign_time) >= self.cooldown_seconds:
                         self._last_sign_time = now
                         self._last_notified_sign = new_pred

@@ -1,5 +1,5 @@
 {
-  "num_classes": 14,
+  "num_classes": 13,
   "classes": [
     "bye",
     "drink",
@@ -8,7 +8,6 @@
     "home",
     "hungry",
     "no",
-    "null",
     "please",
     "sick",
     "sleep",
@@ -16,35 +15,35 @@
     "where",
     "yes"
   ],
-  "best_epoch": 41,
-  "best_val_accuracy": 87.33826247689464,
-  "total_training_seconds": 753.5875828266144,
+  "best_epoch": 44,
+  "best_val_accuracy": 88.92215568862275,
+  "total_training_seconds": 747.7446217536926,
   "sequence_length": 30,
   "input_features": 225,
   "per_class_accuracy": [
     {
       "class": "bye",
       "samples": 81,
-      "correct": 66,
-      "accuracy": 81.48148148148148
+      "correct": 69,
+      "accuracy": 85.18518518518519
     },
     {
       "class": "drink",
       "samples": 80,
-      "correct": 72,
-      "accuracy": 90.0
+      "correct": 74,
+      "accuracy": 92.5
     },
     {
       "class": "food",
       "samples": 79,
-      "correct": 75,
-      "accuracy": 94.9367088607595
+      "correct": 76,
+      "accuracy": 96.20253164556962
     },
     {
       "class": "hello",
       "samples": 78,
-      "correct": 67,
-      "accuracy": 85.8974358974359
+      "correct": 68,
+      "accuracy": 87.17948717948718
     },
     {
       "class": "home",
@@ -55,56 +54,50 @@
     {
       "class": "hungry",
       "samples": 77,
-      "correct": 71,
-      "accuracy": 92.20779220779221
-    },
-    {
-      "class": "no",
-      "samples": 74,
-      "correct": 49,
-      "accuracy": 66.21621621621621
-    },
-    {
-      "class": "null",
-      "samples": 80,
-      "correct": 80,
-      "accuracy": 100.0
-    },
-    {
-      "class": "please",
-      "samples": 77,
       "correct": 69,
       "accuracy": 89.6103896103896
     },
     {
+      "class": "no",
+      "samples": 74,
+      "correct": 51,
+      "accuracy": 68.91891891891892
+    },
+    {
+      "class": "please",
+      "samples": 77,
+      "correct": 72,
+      "accuracy": 93.5064935064935
+    },
+    {
       "class": "sick",
       "samples": 76,
-      "correct": 67,
-      "accuracy": 88.1578947368421
+      "correct": 73,
+      "accuracy": 96.05263157894737
     },
     {
       "class": "sleep",
       "samples": 76,
-      "correct": 61,
-      "accuracy": 80.26315789473685
+      "correct": 70,
+      "accuracy": 92.10526315789474
     },
     {
       "class": "thankyou",
       "samples": 72,
-      "correct": 69,
-      "accuracy": 95.83333333333334
+      "correct": 66,
+      "accuracy": 91.66666666666666
     },
     {
       "class": "where",
       "samples": 75,
-      "correct": 57,
-      "accuracy": 76.0
+      "correct": 62,
+      "accuracy": 82.66666666666667
     },
     {
       "class": "yes",
       "samples": 78,
-      "correct": 70,
-      "accuracy": 89.74358974358975
+      "correct": 69,
+      "accuracy": 88.46153846153845
     }
   ]
 }

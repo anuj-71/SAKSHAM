@@ -200,7 +200,7 @@ def main():
 
     def on_sign_recognized(raw_sign_label: str):
         nonlocal _last_sign_confirmed_time
-        if session.dataset_mode or not raw_sign_label or raw_sign_label == "null":
+        if session.dataset_mode or not raw_sign_label:
             return
         now = time.time()
         if (now - _last_sign_confirmed_time) < SIGN_COOLDOWN_SECONDS:

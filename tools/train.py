@@ -396,7 +396,7 @@ def main():
 
     per_class_results = []
     log.info("\n" + "=" * 70)
-    log.info("PER-CLASS VALIDATION ACCURACY BREAKDOWN (13 SIGN CLASSES + NULL)")
+    log.info("PER-CLASS VALIDATION ACCURACY BREAKDOWN (13 ACTIVE SIGN CLASSES)")
     log.info("=" * 70)
     log.info(f"{'Class Name':<14} | {'Val Samples':<12} | {'Correct':<9} | {'Accuracy':<10}")
     log.info("-" * 70)
