@@ -18,10 +18,10 @@ logger = logging.getLogger("ONNXInferenceEngine")
 
 SEQ_LEN = 30
 FEATURE_DIM = 225            # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
-STABILITY_WINDOW = 5         # Number of recent frames for soft-vote stability
-STABILITY_THRESHOLD = 0.75   # Probability threshold to confirm a sign
-MIN_CONFIDENCE = 0.75        # Minimum confidence threshold (idle/null filter)
-STABILITY_COOLDOWN = 3.0     # 3.0s hard cooldown between confirmed signs
+STABILITY_WINDOW = 2         # Instant 2-frame trigger (fast responsiveness)
+STABILITY_THRESHOLD = 0.65   # Probability threshold to confirm a sign
+MIN_CONFIDENCE = 0.65        # Minimum confidence threshold (idle/null filter)
+STABILITY_COOLDOWN = 2.0     # 2.0s hard cooldown between confirmed signs
 IDLE_TIMEOUT = 0.8           # Seconds of no-hands before clearing buffer
 PREDICTION_LOG_PATH = os.path.join("exports", "onnx_predictions.jsonl")
 
@@ -159,9 +159,7 @@ class ONNXInferenceEngine:
         return normalize_holistic_frame(left_lms, right_lms, pose_lms)
 
     def _run_inference(self):
-        """Run ambidextrous ONNX inference fused with geometric anatomical validation."""
-        from src.sign_language.geometric_rules import compute_geometric_consistency_scores
-
+        """Run clean ambidextrous ONNX CNN-GRU inference on the current (30, 225) buffer."""
         frames = np.stack(list(self.frame_buffer), axis=0).astype(np.float32)  # (30, 225)
         input_tensor = np.expand_dims(frames, axis=0)  # (1, 30, 225)
 
@@ -184,21 +182,11 @@ class ONNXInferenceEngine:
             probs_mirr = (exp_mirr / np.sum(exp_mirr, axis=1, keepdims=True))[0]
 
             # Ensembled neural probabilities across left & right handedness
-            probs_nn = np.maximum(probs_orig, probs_mirr)
+            probs = np.maximum(probs_orig, probs_mirr)
+            probs = probs / np.sum(probs)
         except Exception as e:
             logger.error("ONNX inference failed: %s", e)
             return
-
-        # Neuro-Symbolic Geometric Consistency Fusion
-        geom_scores = compute_geometric_consistency_scores(getattr(self, "_last_hand_data", {}))
-        geom_weights = np.array([
-            geom_scores.get(self.idx_to_label.get(i, ""), 0.5) for i in range(self.num_classes)
-        ], dtype=np.float32)
-
-        # Fuse neural predictions with physical anatomical constraints
-        fused = probs_nn * (geom_weights + 0.12)
-        total_fused = np.sum(fused)
-        probs = (fused / total_fused) if total_fused > 1e-6 else probs_nn
 
         # Top-3 ranking
         top3_idx = np.argsort(probs)[-3:][::-1]
