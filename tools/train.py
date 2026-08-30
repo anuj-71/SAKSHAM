@@ -221,6 +221,7 @@ def export_onnx(model: nn.Module, onnx_path: Path, input_shape: Tuple[int, int, 
             "input": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
+        dynamo=False,
     )
     log.info("Successfully exported ONNX model to: %s (%.2f MB)",
              onnx_path, onnx_path.stat().st_size / (1024 * 1024))

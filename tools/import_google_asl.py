@@ -104,15 +104,14 @@ def resample_sequence(frames: np.ndarray, target_length: int = SEQUENCE_LENGTH) 
 def process_parquet_file(parquet_path: Path) -> Optional[np.ndarray]:
     """
     Reads a Google ASL parquet file and extracts 126 hand coordinates (21 left + 21 right).
-    Returns an array of shape (30, 126) or None if invalid.
+    Vectorized NumPy implementation for maximum speed.
     """
     if not parquet_path.exists():
         return None
 
     try:
-        df = pd.read_parquet(parquet_path)
+        df = pd.read_parquet(parquet_path, columns=["frame", "type", "landmark_index", "x", "y", "z"])
     except Exception as e:
-        log.warning("Failed to read %s: %e", parquet_path.name, e)
         return None
 
     if "frame" not in df.columns or "type" not in df.columns:
@@ -123,43 +122,38 @@ def process_parquet_file(parquet_path: Path) -> Optional[np.ndarray]:
     if hands_df.empty:
         return None
 
-    frames_sorted = sorted(df["frame"].unique())
-    num_frames = len(frames_sorted)
+    unique_frames = sorted(df["frame"].unique())
+    num_frames = len(unique_frames)
     if num_frames == 0:
         return None
 
+    frame_to_idx = {f: i for i, f in enumerate(unique_frames)}
     raw_features = np.zeros((num_frames, INPUT_FEATURES), dtype=np.float32)
 
-    # Group by frame for fast coordinate extraction
-    for f_idx, frame_num in enumerate(frames_sorted):
-        frame_data = hands_df[hands_df["frame"] == frame_num]
-        
-        # Left Hand (0 to 62: 21 landmarks x 3)
-        left_rows = frame_data[frame_data["type"] == "left_hand"]
-        if not left_rows.empty:
-            for _, row in left_rows.iterrows():
-                lm_id = int(row.get("landmark_index", 0))
-                if 0 <= lm_id < 21:
-                    x = row.get("x", 0.0)
-                    y = row.get("y", 0.0)
-                    z = row.get("z", 0.0)
-                    raw_features[f_idx, lm_id * 3]     = 0.0 if np.isnan(x) else x
-                    raw_features[f_idx, lm_id * 3 + 1] = 0.0 if np.isnan(y) else y
-                    raw_features[f_idx, lm_id * 3 + 2] = 0.0 if np.isnan(z) else z
+    h_types = hands_df["type"].values
+    h_lm = hands_df["landmark_index"].values.astype(int)
+    h_frames = hands_df["frame"].map(frame_to_idx).values
+    h_x = np.nan_to_num(hands_df["x"].values, nan=0.0).astype(np.float32)
+    h_y = np.nan_to_num(hands_df["y"].values, nan=0.0).astype(np.float32)
+    h_z = np.nan_to_num(hands_df["z"].values, nan=0.0).astype(np.float32)
 
-        # Right Hand (63 to 125: 21 landmarks x 3)
-        right_rows = frame_data[frame_data["type"] == "right_hand"]
-        if not right_rows.empty:
-            for _, row in right_rows.iterrows():
-                lm_id = int(row.get("landmark_index", 0))
-                if 0 <= lm_id < 21:
-                    x = row.get("x", 0.0)
-                    y = row.get("y", 0.0)
-                    z = row.get("z", 0.0)
-                    offset = 63 + (lm_id * 3)
-                    raw_features[f_idx, offset]     = 0.0 if np.isnan(x) else x
-                    raw_features[f_idx, offset + 1] = 0.0 if np.isnan(y) else y
-                    raw_features[f_idx, offset + 2] = 0.0 if np.isnan(z) else z
+    # Left hand landmarks (0..62: 21 * 3)
+    l_mask = (h_types == "left_hand") & (h_lm >= 0) & (h_lm < 21)
+    if np.any(l_mask):
+        lf_idx = h_frames[l_mask]
+        l_offset = h_lm[l_mask] * 3
+        raw_features[lf_idx, l_offset]     = h_x[l_mask]
+        raw_features[lf_idx, l_offset + 1] = h_y[l_mask]
+        raw_features[lf_idx, l_offset + 2] = h_z[l_mask]
+
+    # Right hand landmarks (63..125: 21 * 3)
+    r_mask = (h_types == "right_hand") & (h_lm >= 0) & (h_lm < 21)
+    if np.any(r_mask):
+        rf_idx = h_frames[r_mask]
+        r_offset = 63 + (h_lm[r_mask] * 3)
+        raw_features[rf_idx, r_offset]     = h_x[r_mask]
+        raw_features[rf_idx, r_offset + 1] = h_y[r_mask]
+        raw_features[rf_idx, r_offset + 2] = h_z[r_mask]
 
     # Resample to fixed 30 frames
     return resample_sequence(raw_features, target_length=SEQUENCE_LENGTH)
@@ -251,6 +245,8 @@ def main():
         })
 
         class_counts[sign] += 1
+        if len(manifest_rows) % 500 == 0 or len(manifest_rows) == len(filtered_df):
+            log.info("Processed %4d samples...", len(manifest_rows))
 
     # Create label map from classes that actually have samples
     active_classes = sorted([cls_name for cls_name in TARGET_CLASSES if class_counts[cls_name] > 0])
