@@ -263,6 +263,28 @@ def main():
                 else:
                     samples_train.append(row)
 
+    # 2b. Auto-discover personal recordings from dataset/processed/personal
+    personal_dir = PROCESSED_DIR / "personal"
+    personal_count = 0
+    if personal_dir.exists():
+        for sign_folder in personal_dir.iterdir():
+            if sign_folder.is_dir() and sign_folder.name in label_map:
+                sign = sign_folder.name
+                for p_npz in sign_folder.glob("*.npz"):
+                    rel = f"personal/{sign}/{p_npz.name}"
+                    # Add personal sample to train split
+                    samples_train.append({
+                        "file_path": rel,
+                        "label": sign,
+                        "signer_id": "USER_PERSONAL",
+                        "source": "personal_recording",
+                        "split": "train",
+                    })
+                    personal_count += 1
+
+    if personal_count > 0:
+        log.info("Discovered %d personal landmark recordings in %s", personal_count, personal_dir)
+
     # Fallback 80/20 split if no validation split found
     if not samples_val:
         all_samples = samples_train
