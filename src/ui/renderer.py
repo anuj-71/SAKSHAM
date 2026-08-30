@@ -100,10 +100,22 @@ class UIRenderer:
         cam_x = self.right_panel_x + 20
         cam_y = self.bottom_y + 12
         if camera_frame is not None:
-            # 1. Draw MediaPipe hand skeleton directly on camera_frame (full size)
+            # 1. Draw MediaPipe Holistic skeleton directly on camera_frame (full size)
             if hand_data:
                 left_hand = hand_data.get("left_hand", {})
                 right_hand = hand_data.get("right_hand", {})
+                pose = hand_data.get("pose", {})
+
+                # Pose / Body skeleton
+                if pose.get("present") and pose.get("pixel_landmarks"):
+                    self._draw_pose_skeleton_on_feed(
+                        camera_frame,
+                        pose["pixel_landmarks"],
+                        line_color=(255, 120, 50),
+                        point_color=(0, 220, 255),
+                    )
+
+                # Hand skeletons
                 if left_hand.get("present") and left_hand.get("pixel_landmarks"):
                     self._draw_hand_skeleton_on_feed(camera_frame, left_hand["pixel_landmarks"], line_color=(255, 0, 255), point_color=(0, 255, 255))
                 if right_hand.get("present") and right_hand.get("pixel_landmarks"):
@@ -421,9 +433,35 @@ class UIRenderer:
         (13, 17), (0, 17), (17, 18), (18, 19), (19, 20) # Pinky
     ]
 
+    POSE_CONNECTIONS = [
+        (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8), (9, 10), # Face
+        (11, 12), # Shoulders
+        (11, 13), (13, 15), # Left Arm
+        (12, 14), (14, 16), # Right Arm
+        (11, 23), (12, 24), (23, 24), # Torso
+    ]
+
     # ──────────────────────────────────────────────────────────────────
-    #  Hand landmarks & skeleton overlay (OpenCV)
+    #  Landmarks & skeleton overlay (OpenCV)
     # ──────────────────────────────────────────────────────────────────
+    def _draw_pose_skeleton_on_feed(self, frame: cv2.Mat,
+                                    pixel_landmarks: List[Tuple[int, int]],
+                                    line_color: Tuple[int, int, int],
+                                    point_color: Tuple[int, int, int]):
+        if not pixel_landmarks or len(pixel_landmarks) < 25:
+            return
+        # Draw pose skeleton connections
+        for p1_idx, p2_idx in self.POSE_CONNECTIONS:
+            if p1_idx < len(pixel_landmarks) and p2_idx < len(pixel_landmarks):
+                pt1 = pixel_landmarks[p1_idx]
+                pt2 = pixel_landmarks[p2_idx]
+                cv2.line(frame, pt1, pt2, line_color, 2, cv2.LINE_AA)
+        # Draw upper body landmark points
+        for idx in range(min(25, len(pixel_landmarks))):
+            pt = pixel_landmarks[idx]
+            radius = 4 if idx in (11, 12, 13, 14, 15, 16) else 2
+            cv2.circle(frame, pt, radius, point_color, -1, cv2.LINE_AA)
+
     def _draw_hand_skeleton_on_feed(self, frame: cv2.Mat,
                                    pixel_landmarks: List[Tuple[int, int]],
                                    line_color: Tuple[int, int, int],
