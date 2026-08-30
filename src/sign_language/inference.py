@@ -159,18 +159,46 @@ class ONNXInferenceEngine:
         return normalize_holistic_frame(left_lms, right_lms, pose_lms)
 
     def _run_inference(self):
-        """Run ONNX CNN-GRU inference on the current (30, 225) buffer."""
+        """Run ambidextrous ONNX inference fused with geometric anatomical validation."""
+        from src.sign_language.geometric_rules import compute_geometric_consistency_scores
+
         frames = np.stack(list(self.frame_buffer), axis=0).astype(np.float32)  # (30, 225)
         input_tensor = np.expand_dims(frames, axis=0)  # (1, 30, 225)
 
+        # Mirrored frames for left/right hand ambidextrous symmetry
+        mirr_frames = frames.copy()
+        mirr_frames[:, 0:63] = frames[:, 63:126]
+        mirr_frames[:, 63:126] = frames[:, 0:63]
+        for col_idx in range(0, FEATURE_DIM, 3):
+            mirr_frames[:, col_idx] = -mirr_frames[:, col_idx]
+        mirr_tensor = np.expand_dims(mirr_frames, axis=0)
+
         try:
-            logits = self.session.run(None, {self.input_name: input_tensor})[0]  # (1, num_classes)
-            # Softmax
-            exp_logits = np.exp(logits - np.max(logits, axis=1, keepdims=True))
-            probs = (exp_logits / np.sum(exp_logits, axis=1, keepdims=True))[0]
+            logits_orig = self.session.run(None, {self.input_name: input_tensor})[0]
+            logits_mirr = self.session.run(None, {self.input_name: mirr_tensor})[0]
+
+            exp_orig = np.exp(logits_orig - np.max(logits_orig, axis=1, keepdims=True))
+            probs_orig = (exp_orig / np.sum(exp_orig, axis=1, keepdims=True))[0]
+
+            exp_mirr = np.exp(logits_mirr - np.max(logits_mirr, axis=1, keepdims=True))
+            probs_mirr = (exp_mirr / np.sum(exp_mirr, axis=1, keepdims=True))[0]
+
+            # Ensembled neural probabilities across left & right handedness
+            probs_nn = np.maximum(probs_orig, probs_mirr)
         except Exception as e:
             logger.error("ONNX inference failed: %s", e)
             return
+
+        # Neuro-Symbolic Geometric Consistency Fusion
+        geom_scores = compute_geometric_consistency_scores(getattr(self, "_last_hand_data", {}))
+        geom_weights = np.array([
+            geom_scores.get(self.idx_to_label.get(i, ""), 0.5) for i in range(self.num_classes)
+        ], dtype=np.float32)
+
+        # Fuse neural predictions with physical anatomical constraints
+        fused = probs_nn * (geom_weights + 0.12)
+        total_fused = np.sum(fused)
+        probs = (fused / total_fused) if total_fused > 1e-6 else probs_nn
 
         # Top-3 ranking
         top3_idx = np.argsort(probs)[-3:][::-1]
