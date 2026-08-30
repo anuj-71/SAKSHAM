@@ -163,7 +163,7 @@ Predicted text is converted into natural speech using Microsoft Edge TTS.
 | Model           | 2-Layer GRU  |
 | Input Features  | 128          |
 | Sequence Length | 64 Frames    |
-| Output Classes  | 15           |
+| Output Classes  | 13           |
 | Runtime         | ONNX Runtime |
 
 ### Current Vocabulary
@@ -179,8 +179,6 @@ Predicted text is converted into natural speech using Microsoft Edge TTS.
 * Drink
 * Hungry
 * Home
-* Mom
-* Dad
 * Sick
 * Where
 
@@ -286,7 +284,7 @@ The project currently uses:
 
 * 5,771 training samples
 * MediaPipe landmark sequences
-* 15 Indian Sign Language classes
+* 13 Indian Sign Language classes
 * Participant-aware training split
 
 ---
@@ -318,14 +316,14 @@ SAKSHAM_DATASET/sign_map.json
 | Speech Recognition | ✅ Complete     |
 | Text-to-Speech     | ✅ Complete     |
 | Real-Time UI       | ✅ Complete     |
-| Model Training     | 🚧 Active      |
+| Model Training     | ✅ Complete     |
 | Evaluation         | 🚧 In Progress |
 
 ---
 
 # Roadmap
 
-* Expand vocabulary beyond 15 signs
+* Expand vocabulary beyond 13 signs
 * Improve recognition accuracy
 * Transformer-based sign recognition
 * ONNX quantization
