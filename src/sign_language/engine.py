@@ -30,7 +30,7 @@ class SignLanguageEngine:
         self.dataset_manager = DatasetManager()
         self.on_sign_recognized = on_sign_recognized
         self.confidence_threshold = CONFIDENCE_THRESHOLD
-        self.cooldown_seconds = 3.0
+        self.cooldown_seconds = 2.5
         self._last_sign_time = 0.0
         self.sequence_buffer = deque(maxlen=SEQUENCE_LENGTH)
         self.sign_cooldowns: Dict[str, float] = {}

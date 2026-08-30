@@ -1,6 +1,9 @@
 """
 ONNX CNN-GRU sign language inference engine for SAKSHAM.
-Runs real-time inference on sliding windows of (30, 225) holistic landmarks.
+Runs real-time inference on sliding windows of (30, 225) holistic landmarks with:
+1. Physics motion gating (delta >= 0.008 to run inference)
+2. 0.4-second continuous hold-time confirmation (instant responsiveness)
+3. 2.5-second hard timestamp cooldown between confirmations
 """
 from __future__ import annotations
 
@@ -8,7 +11,7 @@ import json
 import logging
 import os
 import time
-from collections import Counter, deque
+from collections import deque
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -17,11 +20,10 @@ logger = logging.getLogger("ONNXInferenceEngine")
 
 SEQ_LEN = 30
 FEATURE_DIM = 225            # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
-MOTION_THRESHOLD = 0.015     # Mean absolute difference threshold to trigger inference
-VOTING_BUFFER_SIZE = 10      # Collect last 10 frames of predictions
-VOTING_CONFIRM_THRESHOLD = 7 # Confirm only if same class appears in >= 7 of 10 frames
+MOTION_THRESHOLD = 0.008     # Mean absolute difference threshold to trigger inference (delta >= 0.008)
+HOLD_TIME_SECONDS = 0.4      # Required continuous hold duration with confidence >= 0.75
 MIN_CONFIDENCE = 0.75        # Minimum confidence threshold (0.75)
-STABILITY_COOLDOWN = 3.0     # 3.0s hard timestamp cooldown between confirmed signs
+STABILITY_COOLDOWN = 2.5     # 2.5s hard timestamp cooldown between confirmed signs
 IDLE_TIMEOUT = 0.8           # Seconds of no-hands before clearing buffer
 PREDICTION_LOG_PATH = os.path.join("exports", "onnx_predictions.jsonl")
 
@@ -36,8 +38,7 @@ class ONNXInferenceEngine:
         seq_len: int = SEQ_LEN,
         min_confidence: float = MIN_CONFIDENCE,
         motion_threshold: float = MOTION_THRESHOLD,
-        voting_buffer_size: int = VOTING_BUFFER_SIZE,
-        voting_confirm_threshold: int = VOTING_CONFIRM_THRESHOLD,
+        hold_time_seconds: float = HOLD_TIME_SECONDS,
         cooldown_seconds: float = STABILITY_COOLDOWN,
     ):
         import onnxruntime as ort
@@ -50,6 +51,8 @@ class ONNXInferenceEngine:
         self.seq_len = seq_len
         self.min_confidence = min_confidence
         self.motion_threshold = motion_threshold
+        self.hold_time_seconds = hold_time_seconds
+        self.cooldown_seconds = cooldown_seconds
 
         with open(label_map_path, "r", encoding="utf-8") as f:
             self.label_map: dict[str, int] = json.load(f)
@@ -63,16 +66,12 @@ class ONNXInferenceEngine:
         self._prev_landmarks: Optional[np.ndarray] = None
         self.motion_score: float = 0.0
 
-        # 10-Frame Voting Buffer and Hard 3.0s Timestamp Cooldown
-        self.voting_buffer_size = voting_buffer_size
-        self.voting_confirm_threshold = voting_confirm_threshold
-        self.prediction_history: deque[Optional[str]] = deque(maxlen=voting_buffer_size)
-        self._vote_window: deque[np.ndarray] = deque(maxlen=voting_buffer_size)
-
-        self.cooldown_seconds = cooldown_seconds
-        self.inference_stride = 1  # Evaluate every frame for dense 10-frame voting
-        self.frame_counter = 0
+        # Continuous Hold Confirmation & Hard 2.5s Timestamp Cooldown
+        self._hold_sign: Optional[str] = None
+        self._hold_start_time: float = 0.0
         self._last_confirmed_time: float = 0.0
+
+        # Raw / Live display state
         self._last_prediction: Optional[str] = None
         self._last_confidence: float = 0.0
         self._last_top3: list[tuple[str, float]] = []
@@ -86,14 +85,14 @@ class ONNXInferenceEngine:
         self.current_top3: list[tuple[str, float]] = []
 
         logger.info(
-            "ONNX CNN-GRU Engine loaded: %d classes, seq_len=%d, min_conf=%.2f, motion_gate=%.3f, voting=%d/%d, cooldown=%.1fs",
-            self.num_classes, seq_len, min_confidence, motion_threshold, voting_confirm_threshold, voting_buffer_size, cooldown_seconds,
+            "ONNX CNN-GRU Engine loaded: %d classes, seq_len=%d, min_conf=%.2f, motion_gate=%.4f, hold=%.1fs, cooldown=%.1fs",
+            self.num_classes, seq_len, min_confidence, motion_threshold, hold_time_seconds, cooldown_seconds,
         )
 
     def add_frame(self, hand_data: dict) -> dict:
         """
         Accepts one frame of MediaPipe holistic data, appends 225 coordinates to buffer,
-        evaluates physics motion gate (< 0.015 skips inference), and runs CNN-GRU inference when moving.
+        evaluates physics motion gate (delta < 0.008 skips inference), and runs CNN-GRU inference every frame.
         """
         left_present = bool(hand_data.get("left_hand", {}).get("present", False))
         right_present = bool(hand_data.get("right_hand", {}).get("present", False))
@@ -111,7 +110,6 @@ class ONNXInferenceEngine:
 
         frame_features = self._extract_frame(hand_data)
         self.frame_buffer.append(frame_features)
-        self.frame_counter += 1
 
         # Calculate landmark motion (mean absolute difference against previous frame)
         if self._prev_landmarks is not None:
@@ -121,55 +119,62 @@ class ONNXInferenceEngine:
         self._prev_landmarks = frame_features.copy()
         self.motion_score = motion
 
-        # Only run inference when buffer is full
+        # Only evaluate when buffer has accumulated enough temporal history
         if len(self.frame_buffer) < self.seq_len:
             return self._build_state()
 
-        # Motion Gate: If hands/body are essentially still (< 0.015), skip inference entirely
+        # Motion Gate: If hands/body are essentially still (< 0.008), skip inference entirely
         if motion < self.motion_threshold:
-            self.prediction_history.append(None)
+            self._hold_sign = None
+            self._hold_start_time = 0.0
             self.current_prediction = None
             return self._build_state()
 
-        # Only run CNN-GRU model when hands are actively moving
-        if self.frame_counter % self.inference_stride == 0:
-            self._run_inference()
+        # Run inference every frame
+        self._run_inference()
 
         return self._build_state()
 
     def _reset_on_idle(self):
-        """Clear frame buffer, motion state, and voting history when hands/pose are absent."""
+        """Clear frame buffer, motion state, and hold timer when hands/pose are absent."""
         self.frame_buffer.clear()
-        self.prediction_history.clear()
-        self._vote_window.clear()
         self._prev_landmarks = None
         self.motion_score = 0.0
+        self._hold_sign = None
+        self._hold_start_time = 0.0
         self.current_prediction = None
         self.current_confidence = 0.0
         self.current_top3 = []
         self._last_prediction = None
+        self._last_confidence = 0.0
 
     def get_state(self) -> dict:
         return self._build_state()
 
     def reset(self):
         self.frame_buffer.clear()
-        self.prediction_history.clear()
-        self._vote_window.clear()
         self._prev_landmarks = None
         self.motion_score = 0.0
+        self._hold_sign = None
+        self._hold_start_time = 0.0
         self.current_prediction = None
         self.current_confidence = 0.0
         self.current_top3 = []
         self._last_prediction = None
+        self._last_confidence = 0.0
 
     def get_raw_state(self) -> dict:
+        now = time.time()
+        hold_progress = 0.0
+        if self._hold_sign and self._hold_start_time > 0.0:
+            hold_progress = min(1.0, (now - self._hold_start_time) / self.hold_time_seconds)
+
         return {
             "raw_prediction": self._last_prediction,
             "raw_confidence": self._last_confidence,
             "raw_top3": list(self._last_top3),
-            "vote_window_size": len(self.prediction_history),
-            "vote_window_capacity": self.voting_buffer_size,
+            "hold_sign": self._hold_sign,
+            "hold_progress": hold_progress,
             "motion_score": self.motion_score,
             "motion_threshold": self.motion_threshold,
             "is_moving": self.motion_score >= self.motion_threshold,
@@ -240,80 +245,53 @@ class ONNXInferenceEngine:
         best_label = self.idx_to_label.get(best_idx, "unknown")
         best_confidence = float(probs[best_idx])
 
-        # Confidence gate: must meet min_confidence (0.75)
-        if best_confidence >= self.min_confidence:
-            raw_prediction = best_label
-            self._last_prediction = best_label
-            self._last_confidence = best_confidence
-        else:
-            raw_prediction = None
+        now = time.time()
+
+        # ── Check Hard 2.5-second Cooldown ──
+        if (now - self._last_confirmed_time) < self.cooldown_seconds:
+            self._hold_sign = None
+            self._hold_start_time = 0.0
+            self.current_prediction = None
             self._last_prediction = None
             self._last_confidence = 0.0
-
-        # Record prediction into 10-frame voting history
-        self.prediction_history.append(raw_prediction)
-        self._vote_window.append(probs)
-
-        # Apply 7/10 voting buffer & timestamp cooldown filter
-        self._apply_voting_confirmation()
-
-    def _apply_voting_confirmation(self):
-        """
-        Collects last 10 frames of predictions.
-        Confirms a sign ONLY if the same class appears in >= 7 of 10 frames.
-        Enforces a hard 3.0-second timestamp cooldown using time.time().
-        """
-        if len(self.prediction_history) < self.voting_buffer_size:
-            self.current_prediction = None
             return
 
-        # Count frequencies in the 10-frame window (ignoring None / low confidence)
-        valid_votes = [p for p in self.prediction_history if p is not None]
-        if not valid_votes:
+        # ── Continuous 0.4s Hold Confirmation ──
+        if best_confidence >= self.min_confidence:
+            self._last_prediction = best_label
+            self._last_confidence = best_confidence
+
+            if self._hold_sign == best_label:
+                # Continuing to hold the same sign
+                elapsed_hold = now - self._hold_start_time
+                if elapsed_hold >= self.hold_time_seconds:
+                    # Confirmed after 0.4s continuous hold!
+                    self.current_prediction = best_label
+                    self.current_confidence = best_confidence
+                    self.current_top3 = list(self._last_top3)
+                    self._last_confirmed_time = now
+
+                    # Reset hold state and clear buffer
+                    self._hold_sign = None
+                    self._hold_start_time = 0.0
+                    self.frame_buffer.clear()
+                    logger.info("Confirmed Sign: %s (held for %.2fs, conf=%.1f%%, cooldown 2.5s started)",
+                                best_label, elapsed_hold, best_confidence * 100.0)
+                else:
+                    # Holding in progress (< 0.4s)
+                    self.current_prediction = None
+            else:
+                # Started a new sign or sign changed -> start/reset 0.4s hold timer
+                self._hold_sign = best_label
+                self._hold_start_time = now
+                self.current_prediction = None
+        else:
+            # Below 0.75 confidence -> reset hold timer
+            self._hold_sign = None
+            self._hold_start_time = 0.0
+            self._last_prediction = None
+            self._last_confidence = 0.0
             self.current_prediction = None
-            self.current_confidence = 0.0
-            self.current_top3 = []
-            return
-
-        counts = Counter(self.prediction_history)
-        most_common_label, count = counts.most_common(1)[0]
-
-        # Must meet the 7/10 agreement threshold on a valid class
-        if most_common_label is None or count < self.voting_confirm_threshold:
-            self.current_prediction = None
-            self.current_confidence = 0.0
-            self.current_top3 = []
-            return
-
-        # ── EXACT COOLDOWN CODE BLOCK (Persistent time.time() check) ──
-        now = time.time()
-        elapsed = now - self._last_confirmed_time
-        if elapsed < self.cooldown_seconds:
-            # Under hard cooldown: block confirmation completely
-            self.current_prediction = None
-            self.current_confidence = 0.0
-            self.current_top3 = []
-            return
-
-        # Passed 7/10 agreement AND 3.0s cooldown -> Confirm sign once!
-        avg_probs = np.mean(list(self._vote_window), axis=0)
-        c_idx = self.label_map.get(most_common_label, int(np.argmax(avg_probs)))
-        confidence = float(avg_probs[c_idx])
-
-        self.current_prediction = most_common_label
-        self.current_confidence = confidence
-        self.current_top3 = [
-            (self.idx_to_label.get(int(i), f"class_{i}"), float(avg_probs[i]))
-            for i in np.argsort(avg_probs)[-3:][::-1]
-        ]
-        self._last_confirmed_time = now
-
-        # Flush buffers to avoid duplicate triggers from the same physical gesture
-        self.prediction_history.clear()
-        self._vote_window.clear()
-        self.frame_buffer.clear()
-        logger.info("Confirmed Sign: %s (%d/%d frames agreement, conf=%.1f%%, cooldown 3.0s started)",
-                    most_common_label, count, self.voting_buffer_size, confidence * 100.0)
 
     def _build_state(self) -> dict:
         return {
