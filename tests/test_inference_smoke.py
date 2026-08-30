@@ -29,16 +29,16 @@ state = eng.add_frame({
     'left_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
     'right_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
 })
-print(f'State after 1 frame: buffer={state["buffer_progress"]}/64')
+print(f'State after 1 frame: buffer={state["buffer_progress"]}/30')
 
 # Fill buffer
-for _ in range(63):
+for _ in range(30):
     eng.add_frame({
         'left_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
         'right_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
     })
 state = eng.get_state()
-print(f'State after 64 frames: pred={state["prediction"]}, '
+print(f'State after 30 frames: pred={state["prediction"]}, '
       f'top3={[(l, f"{c:.3f}") for l,c in state["top3"]]}')
 
 # Check SignLanguageEngine initializes

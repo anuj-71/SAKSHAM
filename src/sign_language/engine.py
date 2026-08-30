@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Model configuration constants
 SEQUENCE_LENGTH = 30
-INPUT_FEATURES = 126       # 21 Left Hand (x,y,z) + 21 Right Hand (x,y,z)
+INPUT_FEATURES = 225       # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
 CONFIDENCE_THRESHOLD = 0.75
 
 # Model artefacts live in the top-level models/ directory
@@ -22,7 +22,7 @@ LABEL_MAP_PATH = Path(__file__).resolve().parents[2] / "models" / "label_map.jso
 
 class SignLanguageEngine:
     """
-    Core engine for processing hand tracking data and recognizing sign language.
+    Core engine for processing hand and pose tracking data and recognizing sign language.
     Uses ONNX CNN-GRU model for real-time inference with stability filtering.
     """
     def __init__(self, on_sign_recognized: Optional[Callable[[str], None]] = None):
@@ -30,7 +30,7 @@ class SignLanguageEngine:
         self.dataset_manager = DatasetManager()
         self.on_sign_recognized = on_sign_recognized
         self.confidence_threshold = CONFIDENCE_THRESHOLD
-        self.cooldown_seconds = 2.0
+        self.cooldown_seconds = 3.0
         self._last_sign_time = 0.0
         self.sequence_buffer = deque(maxlen=SEQUENCE_LENGTH)
         self.sign_cooldowns: Dict[str, float] = {}
@@ -94,10 +94,10 @@ class SignLanguageEngine:
             # 3. ONNX GRU inference (if model loaded)
             if self.inference is not None:
                 state = self.inference.add_frame(hand_data)
-                # Fire callback only once per confirmed prediction with 2.0s cooldown
+                # Fire callback only once per confirmed prediction with 3.0s cooldown
                 new_pred = state.get("prediction")
                 now = time.time()
-                if new_pred:
+                if new_pred and new_pred != "null":
                     if (now - self._last_sign_time) >= self.cooldown_seconds:
                         self._last_sign_time = now
                         self._last_notified_sign = new_pred

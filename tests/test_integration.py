@@ -63,25 +63,27 @@ def test_label_map_no_mom_dad():
     engine, _, _ = _make_engine_and_session()
     assert engine.inference is not None
     label_map = engine.inference.label_map
-    assert "mom" not in label_map, "'mom' found in label map: Phase 1 removal incomplete"
-    assert "dad" not in label_map, "'dad' found in label map: Phase 1 removal incomplete"
+    assert "mom" not in label_map, "'mom' found in label map: removal incomplete"
+    assert "dad" not in label_map, "'dad' found in label map: removal incomplete"
+    assert "water" not in label_map, "'water' found in label map: Step 1 removal incomplete"
+    assert "null" in label_map, "'null' class missing from label map"
 
 
 @_SKIP_NO_MODEL
-def test_buffer_fills_after_64_frames():
-    """After 64 identical frames the sliding-window buffer must be full."""
+def test_buffer_fills_after_30_frames():
+    """After 30 identical frames the sliding-window buffer must be full."""
     engine, session, _ = _make_engine_and_session()
     assert engine.inference is not None
 
     # Monkey-patch tracker so we don't need a real camera
     engine.tracker.process_frame = lambda f: (True, HAND_DATA)
 
-    for _ in range(64):
+    for _ in range(30):
         engine.process_frame(None)
 
     state = engine.inference.get_state()
-    assert state["buffer_filled"], "Buffer should be filled after 64 frames"
-    assert state["buffer_progress"] == 64
+    assert state["buffer_progress"] == 30
+    assert state["buffer_capacity"] == 30
 
 
 @_SKIP_NO_MODEL
@@ -91,7 +93,7 @@ def test_session_state_updates_from_inference():
     assert engine.inference is not None
 
     engine.tracker.process_frame = lambda f: (True, HAND_DATA)
-    for _ in range(68):
+    for _ in range(35):
         hand_detected, _ = engine.process_frame(None)
         inf_state = engine.inference.get_state()
         session.live_prediction = inf_state["prediction"]
@@ -101,7 +103,7 @@ def test_session_state_updates_from_inference():
         session.buffer_capacity = inf_state["buffer_capacity"]
 
     # At minimum the buffer is filled and top3/confidence are sensible types
-    assert session.buffer_progress == 64
+    assert session.buffer_progress == 30
     assert isinstance(session.live_top3, list)
     assert isinstance(session.live_confidence, float)
 

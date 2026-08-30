@@ -17,17 +17,17 @@ import numpy as np
 logger = logging.getLogger("ONNXInferenceEngine")
 
 SEQ_LEN = 30
-FEATURE_DIM = 126            # 21 left hand (x,y,z) + 21 right hand (x,y,z)
+FEATURE_DIM = 225            # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
 STABILITY_WINDOW = 5         # Number of recent frames for soft-vote stability
 STABILITY_THRESHOLD = 0.75   # Probability threshold to confirm a sign
 MIN_CONFIDENCE = 0.75        # Minimum confidence threshold (idle/null filter)
-STABILITY_COOLDOWN = 2.0     # 2.0s hard cooldown between confirmed signs
+STABILITY_COOLDOWN = 3.0     # 3.0s hard cooldown between confirmed signs
 IDLE_TIMEOUT = 0.8           # Seconds of no-hands before clearing buffer
 PREDICTION_LOG_PATH = os.path.join("exports", "onnx_predictions.jsonl")
 
 
 class ONNXInferenceEngine:
-    """Accumulates a sliding window of (30, 126) landmarks and runs ONNX CNN-GRU inference."""
+    """Accumulates a sliding window of (30, 225) landmarks and runs ONNX CNN-GRU inference."""
 
     def __init__(
         self,
@@ -53,7 +53,7 @@ class ONNXInferenceEngine:
         self.idx_to_label = {v: k for k, v in self.label_map.items()}
         self.num_classes = len(self.label_map)
 
-        # Sliding window buffer: stores (126,) numpy arrays
+        # Sliding window buffer: stores (225,) numpy arrays
         self.frame_buffer: deque[np.ndarray] = deque(maxlen=seq_len)
 
         # Stability filter state
@@ -77,21 +77,22 @@ class ONNXInferenceEngine:
         self.stability_frames = stability_frames
 
         logger.info(
-            "ONNX CNN-GRU Engine loaded: %d classes, seq_len=%d, min_conf=%.2f",
-            self.num_classes, seq_len, min_confidence,
+            "ONNX CNN-GRU Engine loaded: %d classes, seq_len=%d, min_conf=%.2f, cooldown=%.1fs",
+            self.num_classes, seq_len, min_confidence, cooldown_seconds,
         )
 
     def add_frame(self, hand_data: dict) -> dict:
         """
-        Accepts one frame of MediaPipe hand data, appends 126 coordinates to buffer,
+        Accepts one frame of MediaPipe holistic data, appends 225 coordinates to buffer,
         and runs CNN-GRU inference when buffer is full.
         """
         left_present = bool(hand_data.get("left_hand", {}).get("present", False))
         right_present = bool(hand_data.get("right_hand", {}).get("present", False))
-        hands_present = left_present or right_present
+        pose_present = bool(hand_data.get("pose", {}).get("present", False))
+        detected = left_present or right_present or pose_present
 
         # Idle detection
-        if hands_present:
+        if detected:
             self._last_hand_time = time.time()
         else:
             idle_duration = time.time() - self._last_hand_time
@@ -113,7 +114,7 @@ class ONNXInferenceEngine:
         return self._build_state()
 
     def _reset_on_idle(self):
-        """Clear frame buffer and vote window when hands are absent."""
+        """Clear frame buffer and vote window when hands/pose are absent."""
         self.frame_buffer.clear()
         self._vote_window.clear()
         self.current_prediction = None
@@ -144,11 +145,12 @@ class ONNXInferenceEngine:
         }
 
     def _extract_frame(self, hand_data: dict) -> np.ndarray:
-        """Extracts 126 coordinates (21 left + 21 right landmarks x 3) from hand data."""
+        """Extracts 225 coordinates (21 left + 21 right + 33 pose landmarks x 3) from holistic data."""
         features = np.zeros(FEATURE_DIM, dtype=np.float32)
 
         left = hand_data.get("left_hand", {})
         right = hand_data.get("right_hand", {})
+        pose = hand_data.get("pose", {})
 
         # Left Hand (0..62)
         if left.get("present") and left.get("landmarks"):
@@ -169,12 +171,22 @@ class ONNXInferenceEngine:
                     features[offset + 1] = pt[1]
                     features[offset + 2] = pt[2]
 
+        # Pose (126..224)
+        if pose.get("present") and pose.get("landmarks"):
+            lm_list = pose["landmarks"]
+            for idx, pt in enumerate(lm_list[:33]):
+                if len(pt) >= 3:
+                    offset = 126 + (idx * 3)
+                    features[offset]     = pt[0]
+                    features[offset + 1] = pt[1]
+                    features[offset + 2] = pt[2]
+
         return features
 
     def _run_inference(self):
-        """Run ONNX CNN-GRU inference on the current (30, 126) buffer."""
-        frames = np.stack(list(self.frame_buffer), axis=0).astype(np.float32)  # (30, 126)
-        input_tensor = np.expand_dims(frames, axis=0)  # (1, 30, 126)
+        """Run ONNX CNN-GRU inference on the current (30, 225) buffer."""
+        frames = np.stack(list(self.frame_buffer), axis=0).astype(np.float32)  # (30, 225)
+        input_tensor = np.expand_dims(frames, axis=0)  # (1, 30, 225)
 
         try:
             logits = self.session.run(None, {self.input_name: input_tensor})[0]  # (1, num_classes)
@@ -195,10 +207,9 @@ class ONNXInferenceEngine:
         best_label = self.idx_to_label.get(best_idx, "unknown")
         best_confidence = float(probs[best_idx])
 
-        if best_confidence < self.min_confidence:
+        if best_label == "null" or best_confidence < self.min_confidence:
             self._last_prediction = None
             self._last_confidence = 0.0
-            self._last_top3 = []
         else:
             self._last_prediction = best_label
             self._last_confidence = best_confidence
@@ -219,14 +230,14 @@ class ONNXInferenceEngine:
 
         now = time.time()
 
-        # Fix 2: Idle / Null detection — if all class confidences < 0.75, treat as no sign
-        if confidence < self.min_confidence:
+        # Fix 2: Idle / Null detection — if model predicts 'null' OR top confidence < 0.75, treat as no sign
+        if label == "null" or confidence < self.min_confidence:
             self.current_prediction = None
             self.current_confidence = 0.0
             self.current_top3 = []
             return
 
-        # Fix 1: Hard 2.0-second cooldown — block all confirmations during cooldown period
+        # Fix 1: Hard 3.0-second cooldown — block all confirmations during cooldown period
         if (now - self._last_confirmed_time) < self.cooldown_seconds:
             self.current_prediction = None
             self.current_confidence = 0.0

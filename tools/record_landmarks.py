@@ -1,8 +1,8 @@
 """
-SAKSHAM Personal Landmark Data Recorder
+SAKSHAM Personal Landmark Data Recorder (MediaPipe Holistic)
 
-Captures live MediaPipe hand landmark sequences (30 frames x 126 coordinates)
-directly from the webcam for personal model calibration and fine-tuning.
+Captures live MediaPipe Holistic sequences (30 frames x 225 coordinates:
+21 left hand + 21 right hand + 33 body pose landmarks x 3) directly from webcam.
 
 Saves normalized arrays directly as .npz into dataset/processed/personal/<sign_name>/rep_XXX.npz
 """
@@ -30,12 +30,13 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
-log = logging.getLogger("LandmarkRecorder")
+log = logging.getLogger("HolisticLandmarkRecorder")
 
 # ---------------------------------------------------------------------------
-# 14 Target Classes and ASL Performance Instructions
+# 13 Target Sign Classes + 1 Null Class & Performance Instructions
 # ---------------------------------------------------------------------------
 SIGN_INSTRUCTIONS: Dict[str, str] = {
+    "null": "Do random non-signs: wave loosely, open palm, move hand randomly, transition between positions. Do NOT do any real sign.",
     "bye": "Open hand, wave side to side",
     "drink": "Curve hand like holding a cup, tilt toward mouth",
     "food": "Bring fingertips to lips, tap twice",
@@ -47,13 +48,12 @@ SIGN_INSTRUCTIONS: Dict[str, str] = {
     "sick": "Middle finger to forehead, other to stomach",
     "sleep": "Open hand near face, close fingers downward",
     "thankyou": "Flat hand from chin, move forward",
-    "water": "W handshape (3 fingers up), tap chin twice",
     "where": "Index finger wagging side to side",
     "yes": "Fist, nod up and down (wrist motion)",
 }
 
 SEQUENCE_LENGTH = 30
-INPUT_FEATURES = 126  # 21 Left Hand (x,y,z) + 21 Right Hand (x,y,z)
+INPUT_FEATURES = 225  # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
 
 
 def get_mediapipe_solutions():
@@ -67,33 +67,43 @@ def get_mediapipe_solutions():
         return None
 
 
-def extract_frame_landmarks(results, image_width: int, image_height: int) -> Tuple[np.ndarray, bool]:
+def extract_holistic_landmarks(results) -> Tuple[np.ndarray, bool]:
     """
-    Extracts 126 normalized coordinates (21 left + 21 right hand landmarks x 3 coords).
-    Returns (features_126_array, hands_present_bool).
+    Extracts 225 normalized coordinates (21 left + 21 right + 33 pose landmarks x 3 coords).
+    Returns (features_225_array, tracking_detected_bool).
     """
     features = np.zeros(INPUT_FEATURES, dtype=np.float32)
-    hands_present = False
 
-    if not results.multi_hand_landmarks or not results.multi_handedness:
-        return features, False
+    has_left = results.left_hand_landmarks is not None
+    has_right = results.right_hand_landmarks is not None
+    has_pose = results.pose_landmarks is not None
+    detected = has_left or has_right or has_pose
 
-    hands_present = True
-    for landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-        label = handedness.classification[0].label  # "Left" or "Right"
-        
-        # Google MediaPipe mirrors handedness in selfie mode unless flipped
-        # Left Hand slots: 0..62 (indices 0..20 * 3)
-        # Right Hand slots: 63..125 (indices 0..20 * 3 + 63)
-        offset = 0 if label == "Left" else 63
-        
-        for idx, lm in enumerate(landmarks.landmark[:21]):
-            slot = offset + (idx * 3)
+    # Left Hand: 0..62
+    if has_left:
+        for idx, lm in enumerate(results.left_hand_landmarks.landmark[:21]):
+            slot = idx * 3
             features[slot]     = lm.x
             features[slot + 1] = lm.y
             features[slot + 2] = lm.z
 
-    return features, hands_present
+    # Right Hand: 63..125
+    if has_right:
+        for idx, lm in enumerate(results.right_hand_landmarks.landmark[:21]):
+            slot = 63 + (idx * 3)
+            features[slot]     = lm.x
+            features[slot + 1] = lm.y
+            features[slot + 2] = lm.z
+
+    # Pose: 126..224
+    if has_pose:
+        for idx, lm in enumerate(results.pose_landmarks.landmark[:33]):
+            slot = 126 + (idx * 3)
+            features[slot]     = lm.x
+            features[slot + 1] = lm.y
+            features[slot + 2] = lm.z
+
+    return features, detected
 
 
 def draw_ui_overlay(
@@ -106,30 +116,34 @@ def draw_ui_overlay(
     countdown_val: int = 0,
     frames_recorded: int = 0,
     hands_present: bool = False,
+    pose_present: bool = False,
 ) -> np.ndarray:
     """Renders informative instruction banner and recording status overlay."""
     h, w, _ = frame.shape
     overlay = frame.copy()
 
     # 1. Top instruction panel
-    panel_height = 110
+    panel_height = 115
     cv2.rectangle(overlay, (0, 0), (w, panel_height), (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
 
     # Sign name & Rep counter
     title_text = f"SIGN: {sign_name.upper()}"
     rep_text = f"Rep {rep_current} / {rep_total}"
-    cv2.putText(frame, title_text, (20, 38), cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(frame, rep_text, (w - 200, 38), cv2.FONT_HERSHEY_DUPLEX, 0.8, (200, 200, 200), 2, cv2.LINE_AA)
+    cv2.putText(frame, title_text, (20, 36), cv2.FONT_HERSHEY_DUPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(frame, rep_text, (w - 210, 36), cv2.FONT_HERSHEY_DUPLEX, 0.8, (200, 200, 200), 2, cv2.LINE_AA)
 
     # ASL Instruction description
-    cv2.putText(frame, f"How to sign: {instruction}", (20, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"How to sign: {instruction}", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
 
-    # Hand detection status badge
-    badge_color = (0, 220, 0) if hands_present else (0, 140, 255)
-    badge_text = "Hands Detected" if hands_present else "No Hands Detected"
-    cv2.circle(frame, (25, 96), 6, badge_color, -1)
-    cv2.putText(frame, badge_text, (40, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, badge_color, 1, cv2.LINE_AA)
+    # Holistic detection status badges
+    h_color = (0, 220, 0) if hands_present else (0, 140, 255)
+    cv2.circle(frame, (25, 96), 5, h_color, -1)
+    cv2.putText(frame, "Hands: OK" if hands_present else "Hands: None", (35, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.45, h_color, 1, cv2.LINE_AA)
+
+    p_color = (0, 220, 0) if pose_present else (0, 140, 255)
+    cv2.circle(frame, (160, 96), 5, p_color, -1)
+    cv2.putText(frame, "Pose: OK" if pose_present else "Pose: None", (170, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.45, p_color, 1, cv2.LINE_AA)
 
     # 2. Bottom status bar
     bot_height = 40
@@ -171,19 +185,18 @@ def record_sign_session(
     instruction: str,
     num_reps: int,
     cap: cv2.VideoCapture,
-    hands_detector,
+    holistic_detector,
     mp_draw,
-    mp_hands,
+    mp_holistic,
     dest_dir: Path,
 ) -> bool:
     """
-    Runs an interactive recording session for a single sign class.
+    Runs an interactive recording session for a single sign class using MediaPipe Holistic.
     Returns True if completed, False if user requested quit.
     """
     sign_out_dir = dest_dir / sign_name
     sign_out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine starting rep index from existing files
     existing_reps = list(sign_out_dir.glob("rep_*.npz"))
     rep_idx = len(existing_reps) + 1
     total_reps_target = (rep_idx - 1) + num_reps
@@ -208,19 +221,30 @@ def record_sign_session(
             frame = cv2.flip(frame, 1)
             h, w, _ = frame.shape
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = hands_detector.process(rgb_frame)
+            results = holistic_detector.process(rgb_frame)
 
-            # Draw MediaPipe hands overlay
-            hands_present = bool(results.multi_hand_landmarks)
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    mp_draw.draw_landmarks(
-                        frame,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_draw.DrawingSpec(color=(0, 255, 100), thickness=2, circle_radius=3),
-                        mp_draw.DrawingSpec(color=(255, 200, 0), thickness=2),
-                    )
+            # Draw MediaPipe Holistic overlays
+            hands_present = bool(results.left_hand_landmarks or results.right_hand_landmarks)
+            pose_present = bool(results.pose_landmarks)
+
+            if results.left_hand_landmarks:
+                mp_draw.draw_landmarks(
+                    frame, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
+                    mp_draw.DrawingSpec(color=(0, 255, 100), thickness=2, circle_radius=3),
+                    mp_draw.DrawingSpec(color=(255, 200, 0), thickness=2),
+                )
+            if results.right_hand_landmarks:
+                mp_draw.draw_landmarks(
+                    frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
+                    mp_draw.DrawingSpec(color=(0, 255, 100), thickness=2, circle_radius=3),
+                    mp_draw.DrawingSpec(color=(255, 200, 0), thickness=2),
+                )
+            if results.pose_landmarks:
+                mp_draw.draw_landmarks(
+                    frame, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS,
+                    mp_draw.DrawingSpec(color=(255, 100, 0), thickness=1, circle_radius=2),
+                    mp_draw.DrawingSpec(color=(200, 200, 50), thickness=1),
+                )
 
             draw_ui_overlay(
                 frame,
@@ -230,6 +254,7 @@ def record_sign_session(
                 rep_total=total_reps_target,
                 state="READY",
                 hands_present=hands_present,
+                pose_present=pose_present,
             )
 
             cv2.imshow("SAKSHAM Landmark Recorder", frame)
@@ -242,7 +267,6 @@ def record_sign_session(
                 log.info("User requested exit.")
                 return False
             elif key == ord("r"):
-                # Delete last rep if requested
                 prev_reps = sorted(sign_out_dir.glob("rep_*.npz"))
                 if prev_reps:
                     last_file = prev_reps[-1]
@@ -267,18 +291,29 @@ def record_sign_session(
 
                 frame = cv2.flip(frame, 1)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = hands_detector.process(rgb_frame)
+                results = holistic_detector.process(rgb_frame)
 
-                hands_present = bool(results.multi_hand_landmarks)
-                if results.multi_hand_landmarks:
-                    for hand_landmarks in results.multi_hand_landmarks:
-                        mp_draw.draw_landmarks(
-                            frame,
-                            hand_landmarks,
-                            mp_hands.HAND_CONNECTIONS,
-                            mp_draw.DrawingSpec(color=(0, 255, 100), thickness=2, circle_radius=3),
-                            mp_draw.DrawingSpec(color=(255, 200, 0), thickness=2),
-                        )
+                hands_present = bool(results.left_hand_landmarks or results.right_hand_landmarks)
+                pose_present = bool(results.pose_landmarks)
+
+                if results.left_hand_landmarks:
+                    mp_draw.draw_landmarks(
+                        frame, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
+                        mp_draw.DrawingSpec(color=(0, 255, 100), thickness=2, circle_radius=3),
+                        mp_draw.DrawingSpec(color=(255, 200, 0), thickness=2),
+                    )
+                if results.right_hand_landmarks:
+                    mp_draw.draw_landmarks(
+                        frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
+                        mp_draw.DrawingSpec(color=(0, 255, 100), thickness=2, circle_radius=3),
+                        mp_draw.DrawingSpec(color=(255, 200, 0), thickness=2),
+                    )
+                if results.pose_landmarks:
+                    mp_draw.draw_landmarks(
+                        frame, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS,
+                        mp_draw.DrawingSpec(color=(255, 100, 0), thickness=1, circle_radius=2),
+                        mp_draw.DrawingSpec(color=(200, 200, 50), thickness=1),
+                    )
 
                 draw_ui_overlay(
                     frame,
@@ -289,6 +324,7 @@ def record_sign_session(
                     state="COUNTDOWN",
                     countdown_val=count,
                     hands_present=hands_present,
+                    pose_present=pose_present,
                 )
 
                 cv2.imshow("SAKSHAM Landmark Recorder", frame)
@@ -297,7 +333,7 @@ def record_sign_session(
                     return False
 
         # -------------------------------------------------------------------
-        # Phase 3: Record 30 Frames of Landmarks
+        # Phase 3: Record 30 Frames of Holistic Landmarks (30, 225)
         # -------------------------------------------------------------------
         recorded_frames: List[np.ndarray] = []
         log.info("Capturing rep %d (%d frames)...", current_rep_number, SEQUENCE_LENGTH)
@@ -310,21 +346,33 @@ def record_sign_session(
             frame = cv2.flip(frame, 1)
             h, w, _ = frame.shape
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = hands_detector.process(rgb_frame)
+            results = holistic_detector.process(rgb_frame)
 
-            features, hands_present = extract_frame_landmarks(results, w, h)
+            features, detected = extract_holistic_landmarks(results)
             recorded_frames.append(features)
 
-            # Draw skeletal overlay
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    mp_draw.draw_landmarks(
-                        frame,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_draw.DrawingSpec(color=(0, 50, 255), thickness=2, circle_radius=3),
-                        mp_draw.DrawingSpec(color=(0, 200, 255), thickness=2),
-                    )
+            # Draw skeleton overlays
+            hands_present = bool(results.left_hand_landmarks or results.right_hand_landmarks)
+            pose_present = bool(results.pose_landmarks)
+
+            if results.left_hand_landmarks:
+                mp_draw.draw_landmarks(
+                    frame, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
+                    mp_draw.DrawingSpec(color=(0, 50, 255), thickness=2, circle_radius=3),
+                    mp_draw.DrawingSpec(color=(0, 200, 255), thickness=2),
+                )
+            if results.right_hand_landmarks:
+                mp_draw.draw_landmarks(
+                    frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
+                    mp_draw.DrawingSpec(color=(0, 50, 255), thickness=2, circle_radius=3),
+                    mp_draw.DrawingSpec(color=(0, 200, 255), thickness=2),
+                )
+            if results.pose_landmarks:
+                mp_draw.draw_landmarks(
+                    frame, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS,
+                    mp_draw.DrawingSpec(color=(255, 100, 0), thickness=1, circle_radius=2),
+                    mp_draw.DrawingSpec(color=(200, 200, 50), thickness=1),
+                )
 
             draw_ui_overlay(
                 frame,
@@ -335,6 +383,7 @@ def record_sign_session(
                 state="RECORDING",
                 frames_recorded=len(recorded_frames),
                 hands_present=hands_present,
+                pose_present=pose_present,
             )
 
             cv2.imshow("SAKSHAM Landmark Recorder", frame)
@@ -342,8 +391,8 @@ def record_sign_session(
                 log.info("User aborted recording.")
                 return False
 
-        # Format into (30, 126) float32 numpy array
-        features_array = np.array(recorded_frames, dtype=np.float32)  # Shape (30, 126)
+        # Format into (30, 225) float32 numpy array
+        features_array = np.array(recorded_frames, dtype=np.float32)  # Shape (30, 225)
 
         out_path = sign_out_dir / f"rep_{current_rep_number:03d}.npz"
         np.savez_compressed(
@@ -378,13 +427,13 @@ def record_sign_session(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SAKSHAM Landmark Data Recorder: Capture personal MediaPipe 30x126 landmark sequences"
+        description="SAKSHAM Landmark Data Recorder: Capture personal MediaPipe 30x225 holistic sequences"
     )
     parser.add_argument(
         "--sign_name",
         type=str,
         default=None,
-        help="Specific sign to record (e.g. food, hello, water).",
+        help="Specific sign to record (e.g. food, hello, null).",
     )
     parser.add_argument(
         "--num_reps",
@@ -395,7 +444,7 @@ def main():
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Sequentially record all 14 target signs.",
+        help="Sequentially record all 13 target signs + null.",
     )
     parser.add_argument(
         "--camera_id",
@@ -417,34 +466,35 @@ def main():
     elif args.sign_name:
         sign = args.sign_name.strip().lower()
         if sign not in SIGN_INSTRUCTIONS:
-            log.error("Unknown sign '%s'. Available signs: %s", sign, list(SIGN_INSTRUCTIONS.keys()))
+            log.error("Unknown sign '%s'. Available classes: %s", sign, list(SIGN_INSTRUCTIONS.keys()))
             sys.exit(1)
         target_signs = [sign]
     else:
         log.info("No sign specified. Use --sign_name <name> or --all.")
-        print("\nAvailable 14 Signs:")
+        print("\nAvailable 14 Classes (13 Signs + Null):")
         for k, v in SIGN_INSTRUCTIONS.items():
             print(f"  - {k:<10}: {v}")
-        print("\nExample: .venv\\Scripts\\python.exe tools/record_landmarks.py --sign_name food --num_reps 15\n")
+        print("\nExample: .venv\\Scripts\\python.exe tools/record_landmarks.py --sign_name null --num_reps 20\n")
         sys.exit(0)
 
     dest_dir = Path(args.dest)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize MediaPipe Hands
+    # Initialize MediaPipe Holistic
     mp_sol = get_mediapipe_solutions()
-    if mp_sol is None or not hasattr(mp_sol, "hands"):
-        log.error("MediaPipe solutions module could not be loaded.")
+    if mp_sol is None or not hasattr(mp_sol, "holistic"):
+        log.error("MediaPipe solutions holistic module could not be loaded.")
         sys.exit(1)
 
-    mp_hands = mp_sol.hands
+    mp_holistic = mp_sol.holistic
     mp_draw = mp_sol.drawing_utils
 
-    hands_detector = mp_hands.Hands(
+    holistic_detector = mp_holistic.Holistic(
         static_image_mode=False,
-        max_num_hands=2,
-        min_detection_confidence=0.7,
-        min_tracking_confidence=0.7,
+        model_complexity=1,
+        smooth_landmarks=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
     )
 
     cap = cv2.VideoCapture(args.camera_id)
@@ -456,24 +506,24 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     log.info("=" * 65)
-    log.info("SAKSHAM LANDMARK RECORDER INITIALIZED")
-    log.info("Target signs: %s", target_signs)
-    log.info("Reps per sign: %d", args.num_reps)
+    log.info("SAKSHAM HOLISTIC LANDMARK RECORDER INITIALIZED")
+    log.info("Target classes: %s", target_signs)
+    log.info("Reps per class: %d", args.num_reps)
     log.info("Output directory: %s", dest_dir.resolve())
     log.info("=" * 65)
 
     try:
         for idx, sign in enumerate(target_signs):
             instruction = SIGN_INSTRUCTIONS[sign]
-            log.info("\n[%d/%d] Preparing to record sign: %s", idx + 1, len(target_signs), sign.upper())
+            log.info("\n[%d/%d] Preparing to record: %s", idx + 1, len(target_signs), sign.upper())
             success = record_sign_session(
                 sign_name=sign,
                 instruction=instruction,
                 num_reps=args.num_reps,
                 cap=cap,
-                hands_detector=hands_detector,
+                holistic_detector=holistic_detector,
                 mp_draw=mp_draw,
-                mp_hands=mp_hands,
+                mp_holistic=mp_holistic,
                 dest_dir=dest_dir,
             )
             if not success:
@@ -482,7 +532,7 @@ def main():
     finally:
         cap.release()
         cv2.destroyAllWindows()
-        hands_detector.close()
+        holistic_detector.close()
         log.info("Camera released. Exiting cleanly.")
 
 

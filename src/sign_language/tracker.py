@@ -62,28 +62,29 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class HandTracker:
     """
-    Wraps Google MediaPipe Hands tracking. Detects hand landmarks,
-    extracts coordinates, and determines finger extension states.
+    Wraps Google MediaPipe Holistic tracking. Detects left hand, right hand,
+    and 33-point body pose landmarks with full spatial skeletal coordinates.
     """
     def __init__(self):
         if _MP_SOLUTIONS is None:
             logging.error("MediaPipe 'solutions' namespace could not be located. Check your mediapipe installation.")
             raise RuntimeError("mediapipe.solutions not found")
 
-        self.mp_hands = _MP_SOLUTIONS.hands
+        self.mp_holistic = _MP_SOLUTIONS.holistic
         self.mp_draw = _MP_SOLUTIONS.drawing_utils
         
-        # Initialize MediaPipe Hands model with specified confidence thresholds
-        self.hands = self.mp_hands.Hands(
+        # Initialize MediaPipe Holistic model
+        self.holistic = self.mp_holistic.Holistic(
             static_image_mode=False,
-            max_num_hands=config.MAX_NUM_HANDS,
-            min_detection_confidence=config.MIN_DETECTION_CONFIDENCE,
-            min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE
+            model_complexity=1,
+            smooth_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
         )
         
-        # MediaPipe Landmark connection mapping
-        self.connections = self.mp_hands.HAND_CONNECTIONS
-        logging.info("MediaPipe Hands initialized with confidence thresholds >= 0.8.")
+        self.connections = self.mp_holistic.HAND_CONNECTIONS
+        self.pose_connections = self.mp_holistic.POSE_CONNECTIONS
+        logging.info("MediaPipe Holistic initialized (Hands + 33-point Body Pose).")
 
     @staticmethod
     def _empty_hand(label: str) -> Dict:
@@ -99,73 +100,81 @@ class HandTracker:
 
     def process_frame(self, frame: cv2.Mat) -> Tuple[bool, Dict]:
         """
-        Processes a single BGR image frame.
-        Returns a tuple of (hand_detected, hand_data_dictionary).
+        Processes a single BGR image frame with MediaPipe Holistic.
+        Returns a tuple of (detected, tracking_data_dictionary).
         """
-        # Downsample the frame for MediaPipe tracking if specified
         h, w, _ = frame.shape
-        
-        if config.TRACKING_FRAME_WIDTH > 0 and config.TRACKING_FRAME_HEIGHT > 0:
-            small_bgr = cv2.resize(frame, (config.TRACKING_FRAME_WIDTH, config.TRACKING_FRAME_HEIGHT), interpolation=cv2.INTER_LINEAR)
-            rgb_frame = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2RGB)
-        else:
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-        results = self.hands.process(rgb_frame)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.holistic.process(rgb_frame)
         
         left_hand = self._empty_hand("Left")
         right_hand = self._empty_hand("Right")
+        pose_data = {
+            "present": False,
+            "landmarks": [],
+            "pixel_landmarks": [],
+            "raw_mp_landmarks": None,
+        }
 
-        if results.multi_hand_landmarks and results.multi_handedness:
-            for landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                label = handedness.classification[0].label  # "Left" or "Right"
-                confidence = handedness.classification[0].score
+        # 1. Left Hand
+        if results.left_hand_landmarks:
+            raw_lms = [(lm.x, lm.y, lm.z) for lm in results.left_hand_landmarks.landmark[:21]]
+            px_lms = [(int(lm.x * w), int(lm.y * h)) for lm in results.left_hand_landmarks.landmark[:21]]
+            left_hand = {
+                "label": "Left",
+                "present": True,
+                "confidence": 1.0,
+                "landmarks": raw_lms,
+                "pixel_landmarks": px_lms,
+                "finger_states": self._get_finger_states(raw_lms, "Left"),
+                "raw_mp_landmarks": results.left_hand_landmarks,
+            }
 
-                raw_landmarks = []
-                pixel_landmarks = []
-                isometric_landmarks = []
-                for lm in landmarks.landmark:
-                    raw_landmarks.append((lm.x, lm.y, lm.z))
-                    pixel_landmarks.append((int(lm.x * w), int(lm.y * h)))
-                    # Z is proportional to image width in MediaPipe
-                    isometric_landmarks.append((lm.x * w, lm.y * h, lm.z * w))
+        # 2. Right Hand
+        if results.right_hand_landmarks:
+            raw_lms = [(lm.x, lm.y, lm.z) for lm in results.right_hand_landmarks.landmark[:21]]
+            px_lms = [(int(lm.x * w), int(lm.y * h)) for lm in results.right_hand_landmarks.landmark[:21]]
+            right_hand = {
+                "label": "Right",
+                "present": True,
+                "confidence": 1.0,
+                "landmarks": raw_lms,
+                "pixel_landmarks": px_lms,
+                "finger_states": self._get_finger_states(raw_lms, "Right"),
+                "raw_mp_landmarks": results.right_hand_landmarks,
+            }
 
-                finger_states = self._get_finger_states(raw_landmarks, label)
-                hand_entry = {
-                    "label": label,
-                    "present": True,
-                    "confidence": confidence,
-                    "landmarks": raw_landmarks,
-                    "pixel_landmarks": pixel_landmarks,
-                    "isometric_landmarks": isometric_landmarks,
-                    "finger_states": finger_states,
-                    "raw_mp_landmarks": landmarks,
-                }
-
-                if label == "Left":
-                    if (not left_hand["present"]) or confidence >= left_hand["confidence"]:
-                        left_hand = hand_entry
-                elif label == "Right":
-                    if (not right_hand["present"]) or confidence >= right_hand["confidence"]:
-                        right_hand = hand_entry
+        # 3. Pose (33 body landmarks)
+        if results.pose_landmarks:
+            raw_lms = [(lm.x, lm.y, lm.z) for lm in results.pose_landmarks.landmark[:33]]
+            px_lms = [(int(lm.x * w), int(lm.y * h)) for lm in results.pose_landmarks.landmark[:33]]
+            pose_data = {
+                "present": True,
+                "landmarks": raw_lms,
+                "pixel_landmarks": px_lms,
+                "raw_mp_landmarks": results.pose_landmarks,
+            }
 
         hands_present = int(left_hand["present"]) + int(right_hand["present"])
-        if hands_present == 0:
+        detected = hands_present > 0 or pose_data["present"]
+
+        if not detected:
             return False, {}
 
         primary_hand = right_hand if right_hand["present"] else left_hand
         hand_data = {
             "left_hand": left_hand,
             "right_hand": right_hand,
+            "pose": pose_data,
             "hands_present": hands_present,
-            "primary_hand": primary_hand["label"],
-            # Keep primary-hand aliases so the heuristic pipeline still works.
-            "label": primary_hand["label"],
-            "confidence": primary_hand["confidence"],
-            "landmarks": primary_hand["landmarks"],
-            "pixel_landmarks": primary_hand["pixel_landmarks"],
-            "finger_states": primary_hand["finger_states"],
-            "raw_mp_landmarks": primary_hand["raw_mp_landmarks"],
+            "primary_hand": primary_hand["label"] if hands_present else "None",
+            "label": primary_hand["label"] if hands_present else "None",
+            "confidence": primary_hand["confidence"] if hands_present else 0.0,
+            "landmarks": primary_hand["landmarks"] if hands_present else [],
+            "pixel_landmarks": primary_hand["pixel_landmarks"] if hands_present else [],
+            "finger_states": primary_hand["finger_states"] if hands_present else {},
+            "raw_mp_landmarks": primary_hand["raw_mp_landmarks"] if hands_present else None,
+            "raw_holistic": results,
         }
         return True, hand_data
 
