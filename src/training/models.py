@@ -52,7 +52,7 @@ class BiGRU_Attention(nn.Module):
                  input_dim: int,
                  hidden_dim: int = 256,
                  num_layers: int = 2,
-                 num_classes: int = 15,
+                 num_classes: int = 13,  # Updated from 15 (Phase 1: removed mom/dad)
                  dropout: float = 0.3):
         """
         Args:
@@ -141,7 +141,7 @@ class SimpleLSTM(nn.Module):
                  input_dim: int,
                  hidden_dim: int = 128,
                  num_layers: int = 2,
-                 num_classes: int = 15,
+                 num_classes: int = 13,  # Updated from 15 (Phase 1: removed mom/dad)
                  dropout: float = 0.3):
         super().__init__()
         
@@ -181,7 +181,7 @@ class SimpleLSTM(nn.Module):
 
 def create_model(model_name: str,
                 input_dim: int,
-                num_classes: int = 15,
+                num_classes: int = 13,  # Updated from 15 (Phase 1: removed mom/dad)
                 **kwargs) -> nn.Module:
     """
     Factory function to create models
@@ -216,7 +216,7 @@ if __name__ == "__main__":
     batch_size = 4
     seq_len = 128
     input_dim = 225  # 75 landmarks * 3 (x,y,z)
-    num_classes = 15
+    num_classes = 13  # Updated from 15 (Phase 1: removed mom/dad)
     
     # Create model
     model = BiGRU_Attention(input_dim=input_dim, num_classes=num_classes)

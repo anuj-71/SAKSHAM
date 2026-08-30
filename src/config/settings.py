@@ -24,6 +24,13 @@ DEV_MODE = False             # Press 'd' to toggle Developer Mode
 SHOW_FPS = False             # Controlled by Dev Mode
 SHOW_TRACKING_LANDMARKS = False # Controlled by Dev Mode
 
+# Speech Recognition Settings
+STT_BACKEND = "whisper"      # "whisper" (local Faster-Whisper) or "google" (Google Web Speech API)
+                             # Recommended: "whisper" for lower latency, no network dependency
+WHISPER_MODEL_SIZE = "base"  # "tiny", "base", "small" (base = best speed/accuracy tradeoff for CPU)
+WHISPER_DEVICE = "cpu"       # "cpu" or "cuda" (GPU requires CUDA-capable GPU)
+WHISPER_COMPUTE_TYPE = "int8" # "int8" (quantized for CPU) or "float32" (full precision)
+
 # Styling & Theme (Accessibility First - High Contrast Dark Mode BGR Format)
 COLOR_BG = (30, 30, 30)            # Dark grey background
 COLOR_TEXT_PRIMARY = (240, 240, 240)  # Off-white text

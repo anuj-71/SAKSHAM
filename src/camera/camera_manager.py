@@ -68,7 +68,13 @@ class CameraManager:
                 time.sleep(0.01)
                 continue
                 
-            ret, frame = self.cap.read()
+            try:
+                ret, frame = self.cap.read()
+            except Exception as e:
+                logging.error(f"OpenCV error during cap.read(): {e}")
+                time.sleep(0.1)
+                continue
+                
             if ret:
                 with self.lock:
                     self.frame = frame

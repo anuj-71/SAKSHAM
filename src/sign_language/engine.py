@@ -11,8 +11,9 @@ from src.sign_language.inference import ONNXInferenceEngine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-MODEL_PATH = Path(__file__).resolve().parents[2] / "dataset" / "models" / "model.onnx"
-LABEL_MAP_PATH = Path(__file__).resolve().parents[2] / "dataset" / "models" / "label_map.json"
+# Model artefacts live in the top-level models/ directory (consolidated in cleanup).
+MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / "model.onnx"
+LABEL_MAP_PATH = Path(__file__).resolve().parents[2] / "models" / "label_map.json"
 
 class SignLanguageEngine:
     """
@@ -88,9 +89,6 @@ class SignLanguageEngine:
                 state = self.inference.add_frame(hand_data)
                 # Fire callback only once per new confirmed prediction
                 new_pred = state["prediction"]
-                # Filter out unknown class (non-sign gestures)
-                if new_pred == "unknown":
-                    new_pred = None
                 if new_pred and new_pred != self._last_notified_sign and self.on_sign_recognized:
                     self._last_notified_sign = new_pred
                     self.on_sign_recognized(new_pred)

@@ -1,689 +1,540 @@
 """
-Train a GRU classifier on SAKSHAM_DATASET parquet files using the
-same preprocessing pipeline as the runtime ONNX inference engine.
+tools/train.py
+==============
+Generic GRU trainer for SAKSHAM ISL recognition.
 
-Exports the trained model to dataset/models/model.onnx for runtime use.
+Dataset contract (dataset-agnostic):
+  dataset/metadata/manifest.csv   - rows: file_path, label, signer_id, source, split
+  dataset/processed/<file_path>   - .npz files with key "isometric_landmarks"
+                                    shape: (T, 128) float32, T can vary
 
-Enhancements over original:
-- Participant-aware train/val/test splits (no data leakage)
-- Pre-caching of preprocessed samples for faster I/O
-- Post-training test-set evaluation with confusion matrix
-- Classification report with per-class accuracy
-- Resume from checkpoint
+The trainer is intentionally NOT tied to any specific dataset source (CISLR, ASL, etc.).
+To swap datasets, populate dataset/raw/ and dataset/processed/ differently
+and update dataset/metadata/manifest.csv — no changes to this file required.
+
+Output:
+  models/gru_best.pt       - best PyTorch checkpoint (val accuracy)
+  models/model.onnx        - exported ONNX for runtime inference
+  models/model.onnx.data   - external weights (if onnx externalises them)
+  models/label_map.json    - {class_name: index} mapping for inference
+  models/training_curves.png
+  models/confusion_matrix.png
+  models/evaluation_results.json
 
 Usage:
-    .venv\\Scripts\\python.exe -m tools.train_and_export [--epochs 50]
+  cd E:\\gessture
+  .venv\\Scripts\\python.exe tools/train.py [--epochs N] [--batch B] [--hidden H]
 """
+from __future__ import annotations
+
 import argparse
+import csv
 import json
 import logging
 import os
 import sys
 import time
+from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-import pyarrow.parquet as pq
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
-from src.sign_language.training.preprocessing import preprocess_sample_for_gru
-from src.sign_language.training.normalization import normalize_hand_frame
+# ── Paths (from configs/config.py, but we import directly so the script is
+#    runnable standalone without the app installed) ──────────────────────────
+PROJECT_ROOT   = Path(__file__).resolve().parent.parent
+MANIFEST_CSV   = PROJECT_ROOT / "dataset" / "metadata" / "manifest.csv"
+PROCESSED_DIR  = PROJECT_ROOT / "dataset" / "processed"
+MODELS_DIR     = PROJECT_ROOT / "models"
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# ── Architecture hyper-parameters (override via CLI) ────────────────────────
+SEQ_LEN      = 64      # frames fed to GRU per inference call
+FEATURE_DIM  = 128     # isometric landmark feature dim (21 pts × xyz + zeros pad)
+HIDDEN_SIZE  = 256
+NUM_LAYERS   = 2
+DROPOUT      = 0.3
 
-SEQ_LEN = 64
-FEATURE_DIM = 128
-HIDDEN_SIZE = 128
-NUM_LAYERS = 2
-DROPOUT = 0.3
-
-CSV_PATH = "SAKSHAM_DATASET/train_filtered.csv"
-SIGN_MAP_PATH = "SAKSHAM_DATASET/sign_map.json"
-OUTPUT_DIR = "dataset/models"
-CACHE_DIR = "dataset/models/.feature_cache"
-
-NUM_HAND_LANDMARKS = 21
-
-
-# ── Dataset ────────────────────────────────────────────────────────────────────
-
-
-class ParquetSignDataset(Dataset):
-    """Loads SAKSHAM_DATASET parquet files and preprocesses hand landmarks
-    identically to the runtime ONNX inference pipeline."""
-
-    def __init__(self, csv_path: str, sign_map: dict):
-        import csv
-        self.samples = []
-        with open(csv_path, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                self.samples.append((row["path"], sign_map[row["sign"]]))
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        rel_path, label_idx = self.samples[idx]
-        full_path = Path("SAKSHAM_DATASET") / rel_path
-
-        table = pq.read_table(str(full_path))
-        df = table.to_pandas()
-        df[["x", "y", "z"]] = df[["x", "y", "z"]].fillna(0.0)
-
-        frame_ids = sorted(df["frame"].unique())
-        left_hand_frames = []
-        right_hand_frames = []
-        left_present_list = []
-        right_present_list = []
-
-        for fid in frame_ids:
-            frame_df = df[df["frame"] == fid]
-
-            left = frame_df[frame_df["type"] == "left_hand"].sort_values("landmark_index")
-            right = frame_df[frame_df["type"] == "right_hand"].sort_values("landmark_index")
-
-            if len(left) == NUM_HAND_LANDMARKS:
-                l_lm = left[["x", "y", "z"]].values.astype(np.float32)
-                left_present_list.append(True)
-            else:
-                l_lm = np.zeros((NUM_HAND_LANDMARKS, 3), dtype=np.float32)
-                left_present_list.append(False)
-
-            if len(right) == NUM_HAND_LANDMARKS:
-                r_lm = right[["x", "y", "z"]].values.astype(np.float32)
-                right_present_list.append(True)
-            else:
-                r_lm = np.zeros((NUM_HAND_LANDMARKS, 3), dtype=np.float32)
-                right_present_list.append(False)
-
-            l_norm = normalize_hand_frame(l_lm, left_present_list[-1])
-            r_norm = normalize_hand_frame(r_lm, right_present_list[-1])
-
-            left_hand_frames.append(l_norm)
-            right_hand_frames.append(r_norm)
-
-        left_hand = np.stack(left_hand_frames, axis=0)
-        right_hand = np.stack(right_hand_frames, axis=0)
-        left_present = np.array(left_present_list, dtype=np.float32)
-        right_present = np.array(right_present_list, dtype=np.float32)
-
-        sample = {
-            "left_hand": left_hand,
-            "right_hand": right_hand,
-            "left_present": left_present,
-            "right_present": right_present,
-        }
-
-        result = preprocess_sample_for_gru(sample, target_length=SEQ_LEN, include_presence=True)
-        features = torch.from_numpy(result["features"])
-        return features.float(), torch.tensor(label_idx, dtype=torch.long)
+# ── Training defaults ────────────────────────────────────────────────────────
+DEFAULT_EPOCHS     = 80
+DEFAULT_BATCH      = 32
+DEFAULT_LR         = 1e-3
+DEFAULT_VAL_SPLIT  = 0.15
+DEFAULT_PATIENCE   = 12    # early-stop if val loss doesn't improve for N epochs
+RANDOM_SEED        = 42
 
 
-class CachedTensorDataset(Dataset):
-    """Memory-mapped dataset that loads pre-cached .npz feature tensors."""
+# ══════════════════════════════════════════════════════════════════════════════
+# Data loading
+# ══════════════════════════════════════════════════════════════════════════════
 
-    def __init__(self, indices: list, features_array: np.ndarray, labels_array: np.ndarray):
-        self.indices = indices
-        self.features = features_array
-        self.labels = labels_array
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, idx):
-        real_idx = self.indices[idx]
-        feat = torch.from_numpy(self.features[real_idx].copy()).float()
-        label = torch.tensor(int(self.labels[real_idx]), dtype=torch.long)
-        return feat, label
-
-
-# ── Model ──────────────────────────────────────────────────────────────────────
-
-
-class GRUClassifier(nn.Module):
-    """2-layer GRU with linear classification head.
-    Matches the architecture expected by the ONNX inference engine."""
-
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int,
-                 num_classes: int, dropout: float):
-        super().__init__()
-        self.gru = nn.GRU(
-            input_dim, hidden_dim, num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0,
+def load_manifest(csv_path: Path) -> List[Dict]:
+    """Load manifest.csv; returns list of row dicts."""
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"Manifest not found: {csv_path}\n"
+            "Run the CISLR extraction pipeline first (tools/cislr/extract_landmarks.py)."
         )
-        self.fc = nn.Linear(hidden_dim, num_classes)
-
-    def forward(self, x):
-        _, h_n = self.gru(x)
-        out = h_n[-1]
-        return self.fc(out)
-
-
-# ── Splitting ──────────────────────────────────────────────────────────────────
-
-
-def participant_aware_split(csv_path: str, seed: int = 42):
-    """Split samples by participant_id to prevent data leakage.
-
-    Returns: (train_indices, val_indices, test_indices) referencing rows in the CSV.
-    """
-    import csv as csv_module
-    import random
-
     rows = []
-    with open(csv_path, "r") as f:
-        reader = csv_module.DictReader(f)
-        for i, row in enumerate(reader):
-            rows.append((i, row["participant_id"]))
-
-    # Gather unique participants
-    participants = sorted(set(pid for _, pid in rows))
-    rng = random.Random(seed)
-    rng.shuffle(participants)
-
-    n = len(participants)
-    n_train = max(1, int(round(n * 0.70)))
-    n_val = max(1, int(round(n * 0.15)))
-    # Remaining go to test
-    n_test = n - n_train - n_val
-    if n_test < 1:
-        n_test = 1
-        n_train = n - n_val - n_test
-
-    train_pids = set(participants[:n_train])
-    val_pids = set(participants[n_train:n_train + n_val])
-    test_pids = set(participants[n_train + n_val:])
-
-    train_idx, val_idx, test_idx = [], [], []
-    for i, pid in rows:
-        if pid in train_pids:
-            train_idx.append(i)
-        elif pid in val_pids:
-            val_idx.append(i)
-        else:
-            test_idx.append(i)
-
-    logging.info(
-        "Participant split: %d train (%d pids), %d val (%d pids), %d test (%d pids)",
-        len(train_idx), len(train_pids),
-        len(val_idx), len(val_pids),
-        len(test_idx), len(test_pids),
-    )
-    return train_idx, val_idx, test_idx
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            rows.append(row)
+    log.info("Manifest: %d rows loaded from %s", len(rows), csv_path)
+    return rows
 
 
-# ── Caching ────────────────────────────────────────────────────────────────────
+def build_label_map(rows: List[Dict]) -> Dict[str, int]:
+    """Build {class_name: index} from manifest labels, sorted for determinism."""
+    labels = sorted({r["label"] for r in rows if r.get("label")})
+    return {lbl: idx for idx, lbl in enumerate(labels)}
 
 
-def build_feature_cache(csv_path: str, sign_map: dict, cache_dir: str):
-    """Pre-process all parquet files and cache features to disk as .npz.
-    Returns (features_array, labels_array) of shape (N, SEQ_LEN, FEATURE_DIM) and (N,)."""
-    cache_path = Path(cache_dir)
-    features_file = cache_path / "features.npy"
-    labels_file = cache_path / "labels.npy"
+def load_npz(file_path: Path) -> Optional[np.ndarray]:
+    """
+    Load a single .npz file.  Returns float32 array of shape (T, 128).
+    Accepts either:
+      - key "isometric_landmarks"  (new pipeline)
+      - key "landmarks"            (legacy key, for backward compat)
+    Returns None on failure.
+    """
+    try:
+        data = np.load(file_path, allow_pickle=False)
+        for key in ("isometric_landmarks", "landmarks", "features"):
+            if key in data:
+                arr = data[key].astype(np.float32)
+                if arr.ndim == 2 and arr.shape[-1] == FEATURE_DIM:
+                    return arr
+                log.debug("Skipping %s[%s]: shape %s unexpected", file_path.name, key, arr.shape)
+        log.warning("No usable key in %s (keys: %s)", file_path.name, list(data.keys()))
+        return None
+    except Exception as exc:
+        log.warning("Failed to load %s: %s", file_path, exc)
+        return None
 
-    if features_file.exists() and labels_file.exists():
-        logging.info("Loading cached features from %s", cache_dir)
-        features = np.load(str(features_file))
-        labels = np.load(str(labels_file))
-        logging.info("Loaded %d cached samples (features shape: %s)", len(labels), features.shape)
-        return features, labels
 
-    logging.info("Building feature cache (this runs once, may take a few minutes)...")
-    cache_path.mkdir(parents=True, exist_ok=True)
+def pad_or_crop(arr: np.ndarray, seq_len: int) -> np.ndarray:
+    """Pad (repeat-edge) or centre-crop to exactly seq_len frames."""
+    T = arr.shape[0]
+    if T >= seq_len:
+        # Centre-crop
+        start = (T - seq_len) // 2
+        return arr[start: start + seq_len]
+    else:
+        # Pad by repeating last frame
+        pad = np.tile(arr[-1:], (seq_len - T, 1))
+        return np.concatenate([arr, pad], axis=0)
 
-    dataset = ParquetSignDataset(csv_path, sign_map)
-    n = len(dataset)
 
-    features = np.zeros((n, SEQ_LEN, FEATURE_DIM), dtype=np.float32)
-    labels = np.zeros(n, dtype=np.int64)
-    errors = 0
+def load_dataset(
+    rows: List[Dict],
+    label_map: Dict[str, int],
+    split: str = "train",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load all .npz files for the given split.
+    Returns (X, y): X shape (N, SEQ_LEN, FEATURE_DIM), y shape (N,) int.
+    """
+    X_list, y_list = [], []
+    skipped = 0
+    for row in rows:
+        if row.get("split", "train") != split:
+            continue
+        label = row.get("label", "")
+        if label not in label_map:
+            skipped += 1
+            continue
+        fp = PROCESSED_DIR / row["file_path"]
+        arr = load_npz(fp)
+        if arr is None:
+            skipped += 1
+            continue
+        X_list.append(pad_or_crop(arr, SEQ_LEN))
+        y_list.append(label_map[label])
 
-    t0 = time.time()
-    for i in range(n):
-        try:
-            feat, label = dataset[i]
-            features[i] = feat.numpy()
-            labels[i] = label.item()
-        except Exception as e:
-            logging.warning("Error processing sample %d: %s", i, e)
-            errors += 1
+    if not X_list:
+        raise RuntimeError(
+            f"No samples loaded for split='{split}'.  "
+            "Check that dataset/processed/ is populated and manifest.csv is correct."
+        )
+    log.info("Split '%s': %d samples loaded, %d skipped", split, len(X_list), skipped)
+    return np.stack(X_list).astype(np.float32), np.array(y_list, dtype=np.int64)
 
-        if (i + 1) % 500 == 0 or i == n - 1:
-            elapsed = time.time() - t0
-            rate = (i + 1) / elapsed
-            remaining = (n - i - 1) / rate if rate > 0 else 0
-            logging.info(
-                "  Cached %d/%d samples (%.1f samples/sec, ~%.0fs remaining, %d errors)",
-                i + 1, n, rate, remaining, errors,
+
+def train_val_split(
+    rows: List[Dict],
+    val_fraction: float = DEFAULT_VAL_SPLIT,
+    seed: int = RANDOM_SEED,
+) -> List[Dict]:
+    """
+    If manifest has no 'split' column, create a stratified train/val split
+    in-place and return the modified rows.
+    """
+    rng = np.random.default_rng(seed)
+    has_split = any(r.get("split") for r in rows)
+    if has_split:
+        log.info("Using split column from manifest.")
+        return rows
+
+    log.info("No 'split' column found — creating stratified %.0f%% val split.", val_fraction * 100)
+    by_label: Dict[str, List[int]] = defaultdict(list)
+    for i, r in enumerate(rows):
+        by_label[r["label"]].append(i)
+
+    for label, idxs in by_label.items():
+        idxs_arr = np.array(idxs)
+        rng.shuffle(idxs_arr)
+        n_val = max(1, int(len(idxs_arr) * val_fraction))
+        for j in idxs_arr[:n_val]:
+            rows[j]["split"] = "val"
+        for j in idxs_arr[n_val:]:
+            rows[j]["split"] = "train"
+    return rows
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Model
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_model(num_classes: int, hidden: int = HIDDEN_SIZE):
+    """Build and return a GRU classifier (requires torch)."""
+    import torch
+    import torch.nn as nn
+
+    class GRUClassifier(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gru = nn.GRU(
+                input_size=FEATURE_DIM,
+                hidden_size=hidden,
+                num_layers=NUM_LAYERS,
+                batch_first=True,
+                dropout=DROPOUT if NUM_LAYERS > 1 else 0.0,
+                bidirectional=False,
+            )
+            self.norm = nn.LayerNorm(hidden)
+            self.head = nn.Sequential(
+                nn.Dropout(DROPOUT),
+                nn.Linear(hidden, hidden // 2),
+                nn.ReLU(),
+                nn.Linear(hidden // 2, num_classes),
             )
 
-    np.save(str(features_file), features)
-    np.save(str(labels_file), labels)
-    logging.info("Feature cache saved to %s (%d samples, %d errors)", cache_dir, n, errors)
-    return features, labels
+        def forward(self, x):          # x: (B, T, F)
+            out, _ = self.gru(x)       # (B, T, H)
+            last = out[:, -1, :]       # (B, H)
+            return self.head(self.norm(last))
+
+    return GRUClassifier()
 
 
-# ── Evaluation ─────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Training loop
+# ══════════════════════════════════════════════════════════════════════════════
 
+def train(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    label_map: Dict[str, int],
+    epochs: int = DEFAULT_EPOCHS,
+    batch_size: int = DEFAULT_BATCH,
+    lr: float = DEFAULT_LR,
+    hidden: int = HIDDEN_SIZE,
+    patience: int = DEFAULT_PATIENCE,
+):
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
 
-def evaluate_model(model, dataloader, device, label_map, output_dir):
-    """Run full test-set evaluation: accuracy, classification report, confusion matrix."""
-    from sklearn.metrics import (
-        accuracy_score, classification_report, confusion_matrix,
+    torch.manual_seed(RANDOM_SEED)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log.info("Training on %s", device)
+
+    num_classes = len(label_map)
+    model = build_model(num_classes, hidden).to(device)
+
+    # Class-weighted loss to handle imbalance
+    class_counts = Counter(y_train.tolist())
+    total = sum(class_counts.values())
+    weights = torch.tensor(
+        [total / (num_classes * class_counts.get(i, 1)) for i in range(num_classes)],
+        dtype=torch.float32,
+    ).to(device)
+    criterion = nn.CrossEntropyLoss(weight=weights)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    train_ds = TensorDataset(
+        torch.from_numpy(X_train), torch.from_numpy(y_train)
     )
+    val_ds = TensorDataset(
+        torch.from_numpy(X_val), torch.from_numpy(y_val)
+    )
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=0)
 
+    best_val_acc  = 0.0
+    best_epoch    = 0
+    no_improve    = 0
+    train_losses, val_losses, val_accs = [], [], []
+
+    for epoch in range(1, epochs + 1):
+        # ── Train ──
+        model.train()
+        epoch_loss = 0.0
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            epoch_loss += loss.item() * len(xb)
+        scheduler.step()
+        train_loss = epoch_loss / len(train_ds)
+
+        # ── Validate ──
+        model.eval()
+        val_loss_sum, correct, total_val = 0.0, 0, 0
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                logits = model(xb)
+                val_loss_sum += criterion(logits, yb).item() * len(xb)
+                correct += (logits.argmax(1) == yb).sum().item()
+                total_val += len(xb)
+        val_loss = val_loss_sum / total_val
+        val_acc  = correct / total_val
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
+
+        log.info(
+            "Epoch %3d/%d  train_loss=%.4f  val_loss=%.4f  val_acc=%.3f%s",
+            epoch, epochs, train_loss, val_loss, val_acc,
+            "  ← best" if val_acc > best_val_acc else "",
+        )
+
+        if val_acc > best_val_acc:
+            best_val_acc  = val_acc
+            best_epoch    = epoch
+            no_improve    = 0
+            torch.save(model.state_dict(), MODELS_DIR / "gru_best.pt")
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                log.info("Early stopping at epoch %d (no improvement for %d epochs).", epoch, patience)
+                break
+
+    log.info("Best val_acc=%.3f at epoch %d", best_val_acc, best_epoch)
+
+    # Reload best weights
+    model.load_state_dict(torch.load(MODELS_DIR / "gru_best.pt", map_location=device))
+    return model, device, train_losses, val_losses, val_accs, best_val_acc
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Evaluation & Export
+# ══════════════════════════════════════════════════════════════════════════════
+
+def evaluate(model, X_val, y_val, label_map, device) -> Dict:
+    import torch
+    idx_to_label = {v: k for k, v in label_map.items()}
     model.eval()
-    all_preds = []
-    all_labels = []
-
+    all_preds, all_true = [], []
     with torch.no_grad():
-        for features, labels in dataloader:
-            features, labels = features.to(device), labels.to(device)
-            outputs = model(features)
-            _, preds = torch.max(outputs, 1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+        Xv = torch.from_numpy(X_val).to(device)
+        for i in range(0, len(Xv), 64):
+            batch = Xv[i: i + 64]
+            preds = model(batch).argmax(1).cpu().numpy()
+            all_preds.extend(preds.tolist())
+            all_true.extend(y_val[i: i + 64].tolist())
 
     all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
+    all_true  = np.array(all_true)
+    acc = float((all_preds == all_true).mean())
 
-    # Class names sorted by index
-    idx_to_label = {v: k for k, v in label_map.items()}
-    class_names = [idx_to_label[i] for i in range(len(label_map))]
+    per_class = {}
+    for idx, name in idx_to_label.items():
+        mask = all_true == idx
+        if mask.sum() == 0:
+            continue
+        per_class[name] = {
+            "total":    int(mask.sum()),
+            "correct":  int((all_preds[mask] == all_true[mask]).sum()),
+            "accuracy": float((all_preds[mask] == all_true[mask]).mean()),
+        }
 
-    overall_acc = accuracy_score(all_labels, all_preds)
+    return {"overall_accuracy": acc, "per_class": per_class}
 
-    # Per-class accuracy
-    per_class_acc = {}
-    for i, name in enumerate(class_names):
-        mask = all_labels == i
-        if mask.sum() > 0:
-            per_class_acc[name] = float((all_preds[mask] == i).sum() / mask.sum())
-        else:
-            per_class_acc[name] = 0.0
 
-    # Classification report
-    report_str = classification_report(
-        all_labels, all_preds, target_names=class_names, zero_division=0
-    )
-    report_dict = classification_report(
-        all_labels, all_preds, target_names=class_names, zero_division=0, output_dict=True
-    )
-
-    # Confusion matrix
-    cm = confusion_matrix(all_labels, all_preds)
-
-    # Print results
-    print("\n" + "=" * 70)
-    print("TEST SET EVALUATION RESULTS")
-    print("=" * 70)
-    print(f"Overall Accuracy: {overall_acc * 100:.2f}%")
-    print(f"\nPer-class Accuracy:")
-    for name, acc in sorted(per_class_acc.items()):
-        print(f"  {name:>12s}: {acc * 100:.2f}%")
-    print(f"\nClassification Report:")
-    print(report_str)
-    print("=" * 70)
-
-    # Save results
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    results = {
-        "overall_accuracy": overall_acc,
-        "per_class_accuracy": per_class_acc,
-        "classification_report": report_dict,
-        "confusion_matrix": cm.tolist(),
-        "class_names": class_names,
-    }
-    with open(out / "evaluation_results.json", "w") as f:
-        json.dump(results, f, indent=2)
-    logging.info("Evaluation results saved to %s", out / "evaluation_results.json")
-
-    # Plot confusion matrix
+def save_training_curves(train_losses, val_losses, val_accs):
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import seaborn as sns
 
-        fig, axes = plt.subplots(1, 2, figsize=(22, 9))
-
-        # Raw counts
-        sns.heatmap(
-            cm, annot=True, fmt="d", cmap="Blues",
-            xticklabels=class_names, yticklabels=class_names,
-            square=True, ax=axes[0],
-        )
-        axes[0].set_ylabel("True Label")
-        axes[0].set_xlabel("Predicted Label")
-        axes[0].set_title("Confusion Matrix (Counts)")
-
-        # Normalized
-        cm_norm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
-        cm_norm = np.nan_to_num(cm_norm)
-        sns.heatmap(
-            cm_norm, annot=True, fmt=".2f", cmap="Blues",
-            xticklabels=class_names, yticklabels=class_names,
-            square=True, ax=axes[1],
-        )
-        axes[1].set_ylabel("True Label")
-        axes[1].set_xlabel("Predicted Label")
-        axes[1].set_title("Confusion Matrix (Normalized)")
-
-        plt.tight_layout()
-        cm_path = out / "confusion_matrix.png"
-        plt.savefig(str(cm_path), dpi=200, bbox_inches="tight")
-        plt.close()
-        logging.info("Confusion matrix saved to %s", cm_path)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+        epochs = range(1, len(train_losses) + 1)
+        ax1.plot(epochs, train_losses, label="Train Loss")
+        ax1.plot(epochs, val_losses, label="Val Loss")
+        ax1.set_title("Loss")
+        ax1.legend()
+        ax2.plot(epochs, val_accs, label="Val Acc", color="green")
+        ax2.set_title("Validation Accuracy")
+        ax2.legend()
+        fig.tight_layout()
+        fig.savefig(MODELS_DIR / "training_curves.png", dpi=120)
+        plt.close(fig)
+        log.info("Saved training_curves.png")
     except ImportError:
-        logging.warning("matplotlib/seaborn not available; skipping confusion matrix plot")
-
-    return overall_acc, per_class_acc
+        log.warning("matplotlib not available — skipping training curves.")
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+def save_confusion_matrix(model, X_val, y_val, label_map, device):
+    try:
+        import torch
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from collections import defaultdict
 
+        idx_to_label = {v: k for k, v in label_map.items()}
+        num_classes = len(label_map)
+        cm = np.zeros((num_classes, num_classes), dtype=int)
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--patience", type=int, default=15)
-    parser.add_argument("--resume", action="store_true", help="Resume from existing checkpoint")
-    parser.add_argument("--no-cache", action="store_true", help="Disable feature caching")
-    args = parser.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    print("=" * 70)
-    print("SAKSHAM Sign Language Recognition — Training Pipeline")
-    print("=" * 70)
-    logging.info("Device: %s", device)
-    logging.info("Epochs: %d, Batch Size: %d, LR: %s, Patience: %d",
-                 args.epochs, args.batch_size, args.lr, args.patience)
-
-    # ── Load label map ─────────────────────────────────────────────────────
-    with open(SIGN_MAP_PATH) as f:
-        sign_map = json.load(f)
-    num_classes = len(sign_map)
-    label_map = sign_map
-    logging.info("Classes (%d): %s", num_classes, list(label_map.keys()))
-
-    # ── Participant-aware split ────────────────────────────────────────────
-    train_indices, val_indices, test_indices = participant_aware_split(CSV_PATH)
-
-    # ── Build or load feature cache ────────────────────────────────────────
-    if args.no_cache:
-        logging.info("Caching disabled — using raw parquet loading")
-        dataset = ParquetSignDataset(CSV_PATH, sign_map)
-        train_dataset = torch.utils.data.Subset(dataset, train_indices)
-        val_dataset = torch.utils.data.Subset(dataset, val_indices)
-        test_dataset = torch.utils.data.Subset(dataset, test_indices)
-    else:
-        features, labels = build_feature_cache(CSV_PATH, sign_map, CACHE_DIR)
-        train_dataset = CachedTensorDataset(train_indices, features, labels)
-        val_dataset = CachedTensorDataset(val_indices, features, labels)
-        test_dataset = CachedTensorDataset(test_indices, features, labels)
-
-    logging.info("Dataset sizes: train=%d, val=%d, test=%d",
-                 len(train_dataset), len(val_dataset), len(test_dataset))
-
-    # Print class distribution for each split
-    def count_classes(ds, name):
-        counts = {}
-        for i in range(len(ds)):
-            _, label = ds[i]
-            lbl = label.item() if hasattr(label, 'item') else int(label)
-            counts[lbl] = counts.get(lbl, 0) + 1
-        idx_to_name = {v: k for k, v in sign_map.items()}
-        logging.info("%s class distribution:", name)
-        for idx in sorted(counts.keys()):
-            logging.info("  %12s: %d", idx_to_name[idx], counts[idx])
-    count_classes(train_dataset, "Train")
-
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
-
-    # ── Create model ───────────────────────────────────────────────────────
-    model = GRUClassifier(
-        input_dim=FEATURE_DIM, hidden_dim=HIDDEN_SIZE,
-        num_layers=NUM_LAYERS, num_classes=num_classes, dropout=DROPOUT,
-    ).to(device)
-
-    total_params = sum(p.numel() for p in model.parameters())
-    logging.info("Model: GRUClassifier (%d params)", total_params)
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
-
-    start_epoch = 1
-    best_val_loss = float("inf")
-    best_val_acc = 0.0
-    best_epoch = -1
-    patience_counter = 0
-    history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
-
-    # ── Resume from checkpoint ─────────────────────────────────────────────
-    ckpt_path = Path(OUTPUT_DIR) / "gru_best.pt"
-    if args.resume and ckpt_path.exists():
-        logging.info("Resuming from checkpoint: %s", ckpt_path)
-        ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model_state_dict"])
-        best_val_loss = ckpt.get("val_loss", float("inf"))
-        best_val_acc = ckpt.get("val_acc", 0.0)
-        best_epoch = ckpt.get("epoch", 0)
-        logging.info("  Resumed: epoch=%d, val_loss=%.4f, val_acc=%.4f",
-                     best_epoch, best_val_loss, best_val_acc)
-
-    # ── Training loop ──────────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("Starting training...")
-    print("=" * 70 + "\n")
-
-    for epoch in range(start_epoch, args.epochs + 1):
-        t0 = time.time()
-
-        # Train
-        model.train()
-        train_loss, train_correct, train_total = 0.0, 0, 0
-
-        for features, labels in train_loader:
-            features, labels = features.to(device), labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(features)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-
-            train_loss += loss.item() * features.size(0)
-            _, preds = torch.max(outputs, 1)
-            train_correct += (preds == labels).sum().item()
-            train_total += labels.size(0)
-
-        train_loss /= train_total
-        train_acc = train_correct / train_total
-
-        # Validate
         model.eval()
-        val_loss, val_correct, val_total = 0.0, 0, 0
         with torch.no_grad():
-            for features, labels in val_loader:
-                features, labels = features.to(device), labels.to(device)
-                outputs = model(features)
-                loss = criterion(outputs, labels)
-                val_loss += loss.item() * features.size(0)
-                _, preds = torch.max(outputs, 1)
-                val_correct += (preds == labels).sum().item()
-                val_total += labels.size(0)
-        val_loss /= val_total
-        val_acc = val_correct / val_total
+            Xv = torch.from_numpy(X_val).to(device)
+            for i in range(0, len(Xv), 64):
+                batch = Xv[i: i + 64]
+                preds = model(batch).argmax(1).cpu().numpy()
+                trues = y_val[i: i + 64]
+                for t, p in zip(trues, preds):
+                    cm[t][p] += 1
 
-        current_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step()
+        labels = [idx_to_label[i] for i in range(num_classes)]
+        fig, ax = plt.subplots(figsize=(max(6, num_classes), max(5, num_classes - 1)))
+        im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+        ax.set_xticks(range(num_classes))
+        ax.set_yticks(range(num_classes))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+        ax.set_yticklabels(labels, fontsize=8)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
+        ax.set_title("Confusion Matrix (Val Set)")
+        fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+        fig.savefig(MODELS_DIR / "confusion_matrix.png", dpi=120)
+        plt.close(fig)
+        log.info("Saved confusion_matrix.png")
+    except Exception as exc:
+        log.warning("Could not save confusion matrix: %s", exc)
 
-        elapsed = time.time() - t0
-        history["train_loss"].append(train_loss)
-        history["train_acc"].append(train_acc)
-        history["val_loss"].append(val_loss)
-        history["val_acc"].append(val_acc)
-        history["lr"].append(current_lr)
 
-        marker = ""
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_val_acc = val_acc
-            best_epoch = epoch
-            patience_counter = 0
-            marker = " * NEW BEST *"
-
-            Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(),
-                "val_loss": val_loss,
-                "val_acc": val_acc,
-                "label_map": label_map,
-                "history": history,
-            }, str(Path(OUTPUT_DIR) / "gru_best.pt"))
-        else:
-            patience_counter += 1
-
-        print(
-            f"Epoch {epoch:3d}/{args.epochs} | "
-            f"Loss: {train_loss:.4f} | Acc: {train_acc:.4f} | "
-            f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | "
-            f"LR: {current_lr:.6f} | {elapsed:.1f}s{marker}"
-        )
-
-        if patience_counter >= args.patience:
-            logging.info("Early stopping at epoch %d (patience=%d)", epoch, args.patience)
-            break
-
-    print("\n" + "=" * 70)
-    logging.info("Training complete. Best val_loss=%.4f, val_acc=%.4f at epoch %d",
-                 best_val_loss, best_val_acc, best_epoch)
-
-    # ── Save training curves ───────────────────────────────────────────────
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        epochs_range = range(1, len(history["train_loss"]) + 1)
-
-        axes[0].plot(epochs_range, history["train_loss"], "b-", label="Train Loss", linewidth=2)
-        axes[0].plot(epochs_range, history["val_loss"], "r-", label="Val Loss", linewidth=2)
-        axes[0].set_xlabel("Epoch")
-        axes[0].set_ylabel("Loss")
-        axes[0].set_title("Training & Validation Loss")
-        axes[0].legend()
-        axes[0].grid(True, alpha=0.3)
-
-        axes[1].plot(epochs_range, [a * 100 for a in history["train_acc"]], "b-", label="Train Acc", linewidth=2)
-        axes[1].plot(epochs_range, [a * 100 for a in history["val_acc"]], "r-", label="Val Acc", linewidth=2)
-        axes[1].set_xlabel("Epoch")
-        axes[1].set_ylabel("Accuracy (%)")
-        axes[1].set_title("Training & Validation Accuracy")
-        axes[1].legend()
-        axes[1].grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        curves_path = Path(OUTPUT_DIR) / "training_curves.png"
-        plt.savefig(str(curves_path), dpi=200, bbox_inches="tight")
-        plt.close()
-        logging.info("Training curves saved to %s", curves_path)
-    except ImportError:
-        logging.warning("matplotlib not available; skipping training curves plot")
-
-    # ── Load best model ────────────────────────────────────────────────────
-    best_ckpt = torch.load(str(Path(OUTPUT_DIR) / "gru_best.pt"), map_location="cpu", weights_only=False)
-    model.load_state_dict(best_ckpt["model_state_dict"])
-    model.to(device)
+def export_onnx(model, device, label_map: Dict[str, int]):
+    import torch
     model.eval()
-
-    # ── Test-set evaluation ────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("Running test-set evaluation...")
-    print("=" * 70)
-    test_acc, per_class_acc = evaluate_model(model, test_loader, device, label_map, OUTPUT_DIR)
-
-    # ── ONNX export ────────────────────────────────────────────────────────
-    logging.info("Exporting to ONNX...")
-    model_cpu = model.cpu()
-    model_cpu.eval()
-    dummy_input = torch.randn(1, SEQ_LEN, FEATURE_DIM)
-    onnx_path = Path(OUTPUT_DIR) / "model.onnx"
-    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-
+    dummy = torch.zeros(1, SEQ_LEN, FEATURE_DIM).to(device)
+    onnx_path = MODELS_DIR / "model.onnx"
     torch.onnx.export(
-        model_cpu,
-        dummy_input,
+        model,
+        dummy,
         str(onnx_path),
+        export_params=True,
+        opset_version=17,
+        do_constant_folding=True,
         input_names=["input"],
         output_names=["output"],
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-        opset_version=17,
-        do_constant_folding=True,
+    )
+    # Save label_map alongside model
+    label_map_path = MODELS_DIR / "label_map.json"
+    with open(label_map_path, "w") as f:
+        json.dump(label_map, f, indent=2, sort_keys=True)
+    log.info("Exported ONNX → %s", onnx_path)
+    log.info("Saved label_map → %s", label_map_path)
+    return onnx_path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Entry point
+# ══════════════════════════════════════════════════════════════════════════════
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Train SAKSHAM ISL GRU classifier")
+    p.add_argument("--epochs",  type=int,   default=DEFAULT_EPOCHS,    help="Max training epochs")
+    p.add_argument("--batch",   type=int,   default=DEFAULT_BATCH,     help="Batch size")
+    p.add_argument("--lr",      type=float, default=DEFAULT_LR,        help="Learning rate")
+    p.add_argument("--hidden",  type=int,   default=HIDDEN_SIZE,       help="GRU hidden size")
+    p.add_argument("--patience",type=int,   default=DEFAULT_PATIENCE,  help="Early-stop patience (epochs)")
+    p.add_argument("--val-split", type=float, default=DEFAULT_VAL_SPLIT, help="Val fraction if no split col")
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    log.info("=" * 60)
+    log.info("  SAKSHAM GRU Trainer")
+    log.info("  Manifest:  %s", MANIFEST_CSV)
+    log.info("  Processed: %s", PROCESSED_DIR)
+    log.info("  Models:    %s", MODELS_DIR)
+    log.info("=" * 60)
+
+    # ── Load manifest ──────────────────────────────────────────
+    rows = load_manifest(MANIFEST_CSV)
+    rows = train_val_split(rows, val_fraction=args.val_split)
+
+    label_map = build_label_map(rows)
+    log.info("Classes (%d): %s", len(label_map), list(label_map.keys()))
+
+    # ── Load .npz files ────────────────────────────────────────
+    X_train, y_train = load_dataset(rows, label_map, split="train")
+    X_val,   y_val   = load_dataset(rows, label_map, split="val")
+
+    log.info("Train: %s  Val: %s", X_train.shape, X_val.shape)
+    log.info("Class distribution (train): %s",
+             {k: int((y_train == v).sum()) for k, v in label_map.items()})
+
+    # ── Train ──────────────────────────────────────────────────
+    model, device, train_losses, val_losses, val_accs, best_val_acc = train(
+        X_train, y_train, X_val, y_val, label_map,
+        epochs=args.epochs, batch_size=args.batch,
+        lr=args.lr, hidden=args.hidden, patience=args.patience,
     )
 
-    label_map_path = Path(OUTPUT_DIR) / "label_map.json"
-    with open(str(label_map_path), "w") as f:
-        json.dump(label_map, f, indent=2)
+    # ── Evaluate ───────────────────────────────────────────────
+    eval_results = evaluate(model, X_val, y_val, label_map, device)
+    eval_results["best_val_acc_during_training"] = best_val_acc
+    log.info("Final eval accuracy: %.3f", eval_results["overall_accuracy"])
+    with open(MODELS_DIR / "evaluation_results.json", "w") as f:
+        json.dump(eval_results, f, indent=2)
+    log.info("Saved evaluation_results.json")
 
-    # ── ONNX validation ───────────────────────────────────────────────────
-    try:
-        import onnxruntime as ort
-        session = ort.InferenceSession(str(onnx_path))
-        input_name = session.get_inputs()[0].name
-        test_input = np.random.randn(1, SEQ_LEN, FEATURE_DIM).astype(np.float32)
-        output = session.run(None, {input_name: test_input})[0]
-        logging.info("ONNX validation OK — output shape: %s", output.shape)
-    except Exception as e:
-        logging.error("ONNX validation FAILED: %s", e)
-        return 2
+    # ── Plots ──────────────────────────────────────────────────
+    save_training_curves(train_losses, val_losses, val_accs)
+    save_confusion_matrix(model, X_val, y_val, label_map, device)
 
-    # ── Final report ───────────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("✅ TRAINING PIPELINE COMPLETE")
-    print("=" * 70)
-    print(f"\n✓ Dataset detected:          SAKSHAM_DATASET/")
-    print(f"✓ Number of classes:         {num_classes}")
-    print(f"✓ Total samples:             {len(train_dataset) + len(val_dataset) + len(test_dataset)}")
-    print(f"  - Train:                   {len(train_dataset)}")
-    print(f"  - Validation:              {len(val_dataset)}")
-    print(f"  - Test:                    {len(test_dataset)}")
-    print(f"✓ Model:                     GRUClassifier ({total_params:,} params)")
-    print(f"✓ Existing model reused:     No (trained from scratch)")
-    print(f"✓ Best validation accuracy:  {best_val_acc * 100:.2f}%")
-    print(f"✓ Best epoch:                {best_epoch}")
-    print(f"✓ Test accuracy:             {test_acc * 100:.2f}%")
-    print(f"✓ Saved model path:          {onnx_path}")
-    print(f"✓ Label map path:            {label_map_path}")
-    print(f"✓ Checkpoint path:           {Path(OUTPUT_DIR) / 'gru_best.pt'}")
-    print(f"✓ Confusion matrix:          {Path(OUTPUT_DIR) / 'confusion_matrix.png'}")
-    print(f"✓ Training curves:           {Path(OUTPUT_DIR) / 'training_curves.png'}")
-    print(f"✓ Files modified:            tools/train_and_export.py")
-    print(f"✓ Warnings:                  None")
-    print("=" * 70)
+    # ── Export ONNX ────────────────────────────────────────────
+    onnx_path = export_onnx(model, device, label_map)
 
-    return 0
+    log.info("=" * 60)
+    log.info("  Training complete.")
+    log.info("  Val accuracy:   %.1f%%", eval_results["overall_accuracy"] * 100)
+    log.info("  Model:          %s", onnx_path)
+    log.info("=" * 60)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

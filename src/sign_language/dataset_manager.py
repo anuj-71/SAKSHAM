@@ -173,8 +173,8 @@ class DatasetManager:
 
     def _save_clip_arrays(self, target_dir: str, sample_id: str, frames: List[Dict]):
         timestamps = np.asarray([frame["timestamp"] for frame in frames], dtype=np.float32)
-        left_hand = np.asarray([frame["left_hand"]["landmarks"] for frame in frames], dtype=np.float32)
-        right_hand = np.asarray([frame["right_hand"]["landmarks"] for frame in frames], dtype=np.float32)
+        left_hand = np.asarray([frame["left_hand"].get("isometric_landmarks", frame["left_hand"].get("landmarks", [])) for frame in frames], dtype=np.float32)
+        right_hand = np.asarray([frame["right_hand"].get("isometric_landmarks", frame["right_hand"].get("landmarks", [])) for frame in frames], dtype=np.float32)
         left_present = np.asarray([float(frame["left_hand"]["present"]) for frame in frames], dtype=np.float32)
         right_present = np.asarray([float(frame["right_hand"]["present"]) for frame in frames], dtype=np.float32)
         left_confidence = np.asarray([frame["left_hand"]["confidence"] for frame in frames], dtype=np.float32)

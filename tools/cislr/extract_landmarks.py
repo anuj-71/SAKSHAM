@@ -105,14 +105,14 @@ def extract_from_video(
             right = data.get("right_hand", {})
 
             if left.get("present"):
-                lm = left["landmarks"]
+                lm = left.get("isometric_landmarks", left.get("landmarks", []))
                 if len(lm) >= 21:
                     l_land = np.array(lm[:21], dtype=np.float32)
                     l_pres = 1.0
                     l_conf = float(left.get("confidence", 0.0))
 
             if right.get("present"):
-                lm = right["landmarks"]
+                lm = right.get("isometric_landmarks", right.get("landmarks", []))
                 if len(lm) >= 21:
                     r_land = np.array(lm[:21], dtype=np.float32)
                     r_pres = 1.0

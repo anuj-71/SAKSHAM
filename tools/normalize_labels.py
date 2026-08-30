@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 TARGET_LABELS = [
+    "HELLO",
     "SEE YOU TOMORROW",
     "HELP",
     "STOP",
@@ -36,7 +37,7 @@ _SEPARATOR_RE = re.compile(r"[_\-]+")
 _NON_ALNUM_SPACE_RE = re.compile(r"[^A-Z0-9 ]+")
 
 ALIASES = {
-    "HELLO": "SEE YOU TOMORROW",
+    "HELLO": "HELLO",
     "HELP": "HELP",
     "STOP": "STOP",
     "YES": "YES",

@@ -1,12 +1,19 @@
 import unittest
 import sys
 import os
+import pytest
 
 # Add parent directory to path so we can import src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import src.config as config
-from src.gesture_engine import GestureEngine
+
+# src.gesture_engine was removed in Phase 1 — replaced by ONNXInferenceEngine.
+# These heuristic-gesture tests are obsolete; skip rather than error.
+pytest.skip(
+    "src.gesture_engine was removed in Phase 1 ONNX migration — tests obsolete",
+    allow_module_level=True,
+)
 
 class TestGestureEngine(unittest.TestCase):
     def setUp(self):

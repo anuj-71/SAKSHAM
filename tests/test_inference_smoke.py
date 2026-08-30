@@ -2,13 +2,22 @@
 import sys, os
 sys.path.insert(0, os.path.abspath('.'))
 
+import pytest
+from src.sign_language.engine import MODEL_PATH, LABEL_MAP_PATH
 from src.sign_language.inference import ONNXInferenceEngine
-from src.sign_language.engine import SignLanguageEngine, MODEL_PATH, LABEL_MAP_PATH
 import numpy as np
 
 print(f'Model exists: {MODEL_PATH.exists()}')
 print(f'Label map exists: {LABEL_MAP_PATH.exists()}')
 print('All imports OK')
+
+# Skip entire module gracefully when no model has been trained yet.
+# Once tools/train.py produces models/model.onnx, this guard becomes inactive.
+if not MODEL_PATH.exists():
+    pytest.skip(
+        f"model.onnx not found at {MODEL_PATH} — run tools/train.py first.",
+        allow_module_level=True,
+    )
 
 # Check the ONNX engine loads
 eng = ONNXInferenceEngine(str(MODEL_PATH), str(LABEL_MAP_PATH))
@@ -33,6 +42,7 @@ print(f'State after 64 frames: pred={state["prediction"]}, '
       f'top3={[(l, f"{c:.3f}") for l,c in state["top3"]]}')
 
 # Check SignLanguageEngine initializes
+from src.sign_language.engine import SignLanguageEngine
 sl_engine = SignLanguageEngine()
 print(f'SL Engine inference loaded: {sl_engine.inference is not None}')
 print('All smoke tests passed!')

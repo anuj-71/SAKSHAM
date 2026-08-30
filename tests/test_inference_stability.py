@@ -5,8 +5,16 @@ sys.path.insert(0, os.path.abspath('.'))
 from src.sign_language.inference import ONNXInferenceEngine
 import numpy as np
 
-eng = ONNXInferenceEngine(str('dataset/models/model.onnx'),
-                           str('dataset/models/label_map.json'),
+import pytest
+from pathlib import Path
+
+_MODEL = Path('models/model.onnx')
+if not _MODEL.exists():
+    pytest.skip(f"model.onnx not found at {_MODEL} — run tools/train.py first.",
+                allow_module_level=True)
+
+eng = ONNXInferenceEngine(str('models/model.onnx'),
+                           str('models/label_map.json'),
                            stability_frames=3)
 
 # Use different hand positions to get more varied predictions

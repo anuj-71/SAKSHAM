@@ -129,18 +129,28 @@ class UIRenderer:
         cam_x = self.right_panel_x + 20
         cam_y = self.bottom_y + 15
         if camera_frame is not None:
+            # 1. Draw MediaPipe hand skeleton directly on camera_frame (full size)
+            if hand_data:
+                left_hand = hand_data.get("left_hand", {})
+                right_hand = hand_data.get("right_hand", {})
+                if left_hand.get("present") and left_hand.get("pixel_landmarks"):
+                    self._draw_hand_skeleton_on_feed(camera_frame, left_hand["pixel_landmarks"], line_color=(255, 0, 255), point_color=(0, 255, 255))
+                if right_hand.get("present") and right_hand.get("pixel_landmarks"):
+                    self._draw_hand_skeleton_on_feed(camera_frame, right_hand["pixel_landmarks"], line_color=(0, 255, 0), point_color=(0, 255, 255))
+
+            # 2. Resize and composite camera frame into UI
             cam_resized = cv2.resize(camera_frame, (self.cam_w, self.cam_h))
             ui_frame[cam_y:cam_y + self.cam_h, cam_x:cam_x + self.cam_w] = cam_resized
             cv2.rectangle(ui_frame, (cam_x, cam_y),
                           (cam_x + self.cam_w, cam_y + self.cam_h), config.COLOR_DIVIDER, 1)
 
-            if config.DEV_MODE and hand_data:
-                left_hand = hand_data.get("left_hand", {})
-                right_hand = hand_data.get("right_hand", {})
-                if left_hand.get("present") and left_hand.get("pixel_landmarks"):
-                    self._draw_dev_landmarks(ui_frame, left_hand["pixel_landmarks"], cam_x, cam_y, (255, 0, 255))
-                if right_hand.get("present") and right_hand.get("pixel_landmarks"):
-                    self._draw_dev_landmarks(ui_frame, right_hand["pixel_landmarks"], cam_x, cam_y, (0, 255, 255))
+            # 3. Draw live debug HUD overlay on top of camera preview box
+            raw_top3 = getattr(session, "raw_top3", [])
+            if raw_top3 and len(raw_top3) > 0:
+                top_label, top_score = raw_top3[0]
+                cv2.rectangle(ui_frame, (cam_x + 5, cam_y + 5), (cam_x + self.cam_w - 5, cam_y + 30), (0, 0, 0), -1)
+                cv2.putText(ui_frame, f"RAW: {top_label} ({top_score:.0%})", (cam_x + 10, cam_y + 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
         # 2. PIL overlay for all text rendering
         self._last_session_dataset_mode = session.dataset_mode
@@ -308,31 +318,39 @@ class UIRenderer:
             draw.text((px, py), "Enable the mic to start speech input.",
                       font=self.font_live, fill=(100, 100, 100))
 
-        # ── Live Sign Prediction (from ONNX GRU) ──
+        # ── Live Sign Prediction & Raw Frame-by-Frame HUD ──
         py += 16
-        pred = getattr(session, "live_prediction", None)
-        conf = getattr(session, "live_confidence", 0.0)
-        top3 = getattr(session, "live_top3", [])
+        raw_top3 = getattr(session, "raw_top3", [])
+        vote_size = getattr(session, "vote_window_size", 0)
+        vote_cap = getattr(session, "vote_window_capacity", 7)
         buf_filled = getattr(session, "buffer_progress", 0)
 
-        # Prediction status line
-        if pred:
-            color = self._bgr_to_rgb(config.COLOR_SUCCESS)
-            pred_text = f"\U0001f590  {pred}  ({conf:.0%})"
-            draw.text((px, py), pred_text, font=self.font_live_state, fill=color)
-            py += 26
-            # Top-3 alternatives
-            top3_parts = [f"{l} ({c:.0%})" for l, c in top3]
-            draw.text((px, py), "Top 3: " + " | ".join(top3_parts),
+        # Show raw per-frame top-3 output (updates every frame, even below stability threshold)
+        if raw_top3:
+            top3_str = " | ".join([f"{l}: {c:.1%}" for l, c in raw_top3])
+            draw.text((px, py), f"Raw Live Frame (Top 3): {top3_str}",
+                      font=self.font_small_bold, fill=self._bgr_to_rgb(config.COLOR_ACCENT))
+            py += 18
+            draw.text((px, py), f"Stability Window: {vote_size}/{vote_cap} frames  |  Buffer: {buf_filled}/64",
                       font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_TEXT_SECONDARY))
             py += 20
-        elif buf_filled >= 64:
-            draw.text((px, py), "\U0001f3af  Waiting for stable prediction...",
-                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_WARNING))
-            py += 20
-        else:
+        elif buf_filled < 64:
             draw.text((px, py), f"\u23F3  Buffering frames... ({buf_filled}/64)",
                       font=self.font_small, fill=(130, 130, 130))
+            py += 20
+
+        # Confirmed prediction (after stability voting)
+        pred = getattr(session, "live_prediction", None)
+        conf = getattr(session, "live_confidence", 0.0)
+        if pred:
+            color = self._bgr_to_rgb(config.COLOR_SUCCESS)
+            pred_text = f"\U0001f590  Confirmed: {pred} ({conf:.0%})"
+            draw.text((px, py), pred_text, font=self.font_live_state, fill=color)
+            py += 24
+        elif buf_filled >= 64:
+            draw.text((px, py), "\U0001f3af  Voting for stable prediction...",
+                      font=self.font_small, fill=self._bgr_to_rgb(config.COLOR_WARNING))
+            py += 20
             py += 20
 
         if session.dataset_mode:
@@ -628,9 +646,34 @@ class UIRenderer:
             )
             draw.text((tx, ty), msg, font=self.font_body_bold, fill=(255, 255, 255, 255))
 
+    HAND_CONNECTIONS = [
+        (0, 1), (1, 2), (2, 3), (3, 4),           # Thumb
+        (0, 5), (5, 6), (6, 7), (7, 8),           # Index
+        (5, 9), (9, 10), (10, 11), (11, 12),      # Middle
+        (9, 13), (13, 14), (14, 15), (15, 16),    # Ring
+        (13, 17), (0, 17), (17, 18), (18, 19), (19, 20) # Pinky
+    ]
+
     # ──────────────────────────────────────────────────────────────────
-    #  Dev mode landmarks overlay (OpenCV, drawn before PIL pass)
+    #  Hand landmarks & skeleton overlay (OpenCV)
     # ──────────────────────────────────────────────────────────────────
+    def _draw_hand_skeleton_on_feed(self, frame: cv2.Mat,
+                                   pixel_landmarks: List[Tuple[int, int]],
+                                   line_color: Tuple[int, int, int],
+                                   point_color: Tuple[int, int, int]):
+        if not pixel_landmarks or len(pixel_landmarks) < 21:
+            return
+        # Draw skeleton connections
+        for p1_idx, p2_idx in self.HAND_CONNECTIONS:
+            pt1 = pixel_landmarks[p1_idx]
+            pt2 = pixel_landmarks[p2_idx]
+            cv2.line(frame, pt1, pt2, line_color, 2, cv2.LINE_AA)
+        # Draw landmark points
+        for idx, pt in enumerate(pixel_landmarks):
+            radius = 5 if idx in (4, 8, 12, 16, 20) else 3
+            cv2.circle(frame, pt, radius, point_color, -1, cv2.LINE_AA)
+            cv2.circle(frame, pt, radius + 1, (0, 0, 0), 1, cv2.LINE_AA)
+
     def _draw_dev_landmarks(self, frame: cv2.Mat,
                             pixel_landmarks: List[Tuple[int, int]],
                             cx: int, cy: int, color: Tuple[int, int, int]):

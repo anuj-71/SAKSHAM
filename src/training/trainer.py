@@ -293,7 +293,7 @@ if __name__ == "__main__":
     num_samples = 100
     seq_len = 128
     input_dim = 225
-    num_classes = 15
+    num_classes = 13  # Updated from 15 (Phase 1: removed mom/dad)
     
     X = torch.randn(num_samples, seq_len, input_dim)
     y = torch.randint(0, num_classes, (num_samples,))

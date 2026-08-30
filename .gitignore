@@ -55,6 +55,7 @@ dataset/landmarks/
 dataset/popsign_bulk/
 dataset/popsign_videos/
 dataset/.feature_cache/
+dataset/processed/cache/
 dataset/accepted/
 dataset/rejected/
 

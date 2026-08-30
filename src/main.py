@@ -15,7 +15,7 @@ import logging
 import src.config.settings as config
 from src.camera.camera_manager import CameraManager
 from src.sign_language.engine import SignLanguageEngine
-from src.speech.speech_engine import SpeechEngine
+from src.config import settings
 from src.speech.tts_engine import PyTTSx3Engine
 from src.ui.renderer import UIRenderer
 from src.session_manager import ConversationSession
@@ -36,6 +36,21 @@ logging.basicConfig(level=logging.DEBUG, handlers=[_console_handler, _file_handl
 for _noisy in ("absl", "onnxruntime", "mediapipe", "tensorflow", "STT-Listener", "STT-Worker"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
+logger = logging.getLogger(__name__)
+
+# Speech engine selection based on settings with graceful fallback
+if settings.STT_BACKEND == "whisper":
+    try:
+        from src.speech.speech_engine_whisper import WhisperSpeechEngine as SpeechEngine
+        logger.info(f"Using Whisper STT (model={settings.WHISPER_MODEL_SIZE}, device={settings.WHISPER_DEVICE})")
+    except Exception as e:
+        logger.error(f"Whisper engine initialization failed: {e}")
+        logger.warning("Falling back to Google Web Speech API")
+        from src.speech.speech_engine import SpeechEngine
+        settings.STT_BACKEND = "google"  # Update runtime setting
+else:
+    from src.speech.speech_engine import SpeechEngine
+    logger.info("Using Google Web Speech API STT")
 
 # Global state for OpenCV callbacks
 scroll_offset = 0
@@ -120,11 +135,10 @@ def main():
         "drink":    "I need a drink.",
         "hungry":   "I am hungry.",
         "home":     "I want to go home.",
-        "mom":      "I need my mom.",
-        "dad":      "I need my dad.",
         "sick":     "I am feeling sick.",
         "where":    "Where are you?",
     }
+    # Note: "mom" and "dad" were removed in Phase 1 (13-class model)
 
     class PhraseBuilder:
         """
@@ -204,7 +218,21 @@ def main():
         else:
             session.set_draft("")
 
-    speech_engine = SpeechEngine(on_text_callback=on_speech_text, on_state_callback=on_speech_state)
+    # Instantiate speech engine with appropriate parameters based on backend
+    if settings.STT_BACKEND == "whisper":
+        speech_engine = SpeechEngine(
+            on_text_callback=on_speech_text,
+            on_state_callback=on_speech_state,
+            model_size=settings.WHISPER_MODEL_SIZE,
+            device=settings.WHISPER_DEVICE,
+            compute_type=settings.WHISPER_COMPUTE_TYPE,
+        )
+    else:
+        speech_engine = SpeechEngine(
+            on_text_callback=on_speech_text,
+            on_state_callback=on_speech_state,
+        )
+
 
     def toggle_mic():
         if session.mic_enabled:
@@ -337,17 +365,29 @@ def main():
             # Forward inference state to session (for UI display)
             if sl_engine.inference is not None:
                 inf_state = sl_engine.inference.get_state()
+                raw_state = sl_engine.inference.get_raw_state()
                 session.live_prediction = inf_state["prediction"]
                 session.live_confidence = inf_state["confidence"]
                 session.live_top3 = inf_state["top3"]
                 session.buffer_progress = inf_state["buffer_progress"]
                 session.buffer_capacity = inf_state["buffer_capacity"]
+
+                session.raw_prediction = raw_state.get("raw_prediction")
+                session.raw_confidence = raw_state.get("raw_confidence", 0.0)
+                session.raw_top3 = raw_state.get("raw_top3", [])
+                session.vote_window_size = raw_state.get("vote_window_size", 0)
+                session.vote_window_capacity = raw_state.get("vote_window_capacity", 7)
             else:
                 session.live_prediction = None
                 session.live_confidence = 0.0
                 session.live_top3 = []
                 session.buffer_progress = 0
                 session.buffer_capacity = 64
+                session.raw_prediction = None
+                session.raw_confidence = 0.0
+                session.raw_top3 = []
+                session.vote_window_size = 0
+                session.vote_window_capacity = 7
 
             if session.dataset_mode and sl_engine.dataset_manager.is_recording:
                 session.set_dataset_live_feedback(sl_engine.dataset_manager.get_live_recording_feedback())

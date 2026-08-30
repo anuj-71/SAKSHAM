@@ -123,9 +123,12 @@ class HandTracker:
 
                 raw_landmarks = []
                 pixel_landmarks = []
+                isometric_landmarks = []
                 for lm in landmarks.landmark:
                     raw_landmarks.append((lm.x, lm.y, lm.z))
                     pixel_landmarks.append((int(lm.x * w), int(lm.y * h)))
+                    # Z is proportional to image width in MediaPipe
+                    isometric_landmarks.append((lm.x * w, lm.y * h, lm.z * w))
 
                 finger_states = self._get_finger_states(raw_landmarks, label)
                 hand_entry = {
@@ -134,6 +137,7 @@ class HandTracker:
                     "confidence": confidence,
                     "landmarks": raw_landmarks,
                     "pixel_landmarks": pixel_landmarks,
+                    "isometric_landmarks": isometric_landmarks,
                     "finger_states": finger_states,
                     "raw_mp_landmarks": landmarks,
                 }

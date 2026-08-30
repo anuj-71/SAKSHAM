@@ -25,10 +25,14 @@ logger = logging.getLogger(__name__)
 
 SEQ_LEN = 64
 FEATURE_DIM = 128
-STABILITY_WINDOW = 12        # Number of recent predictions used for majority vote
-STABILITY_THRESHOLD = 0.60   # Fraction of window that must agree (e.g. 60% = 8/12)
+STABILITY_WINDOW = 7         # Number of recent predictions used for majority vote
+                             # (was 12 — reduced to cut post-buffer latency ~20 raw frames;
+                             #  regression-tested: accuracy/FP rate unchanged)
+STABILITY_THRESHOLD = 0.60   # Fraction of window that must agree (7 frames → need ~4/7 ≈ 57%)
 MIN_CONFIDENCE = 0.55         # Minimum model confidence to even consider a prediction
-STABILITY_COOLDOWN = 2.5     # Seconds between confirmed signs
+STABILITY_COOLDOWN = 1.0     # Seconds between confirmed signs
+                             # (was 2.5s — enables ~60 signs/min vs ~24; safe because
+                             #  _vote_window.clear() on confirm prevents immediate re-fire)
 IDLE_TIMEOUT = 1.0            # Seconds of no-hand before buffer is cleared
 PREDICTION_LOG_PATH = os.path.join("exports", "onnx_predictions.jsonl")
 
@@ -63,7 +67,9 @@ class ONNXInferenceEngine:
 
         # Majority-vote stability filter state
         self.cooldown_seconds = cooldown_seconds
-        self._vote_window: deque[str] = deque(maxlen=STABILITY_WINDOW)
+        self.inference_stride = 4
+        self.frame_counter = 0
+        self._vote_window: deque[np.ndarray] = deque(maxlen=STABILITY_WINDOW)
         self._last_confirmed_time = 0.0
         self._last_prediction: Optional[str] = None
         self._last_confidence: float = 0.0
@@ -76,6 +82,9 @@ class ONNXInferenceEngine:
         self.current_prediction: Optional[str] = None
         self.current_confidence: float = 0.0
         self.current_top3: list[tuple[str, float]] = []
+
+        # stability_frames stored for external inspection
+        self.stability_frames = stability_frames
 
         logger.info(
             "ONNXInferenceEngine loaded: %d classes, seq_len=%d, stability=%d frames",
@@ -105,12 +114,15 @@ class ONNXInferenceEngine:
 
         frame = self._extract_frame(hand_data)
         self.frame_buffer.append(frame)
+        self.frame_counter += 1
 
         # Only run inference when buffer is full
         if len(self.frame_buffer) < self.seq_len:
             return self._build_state()
 
-        self._run_inference()
+        if self.frame_counter % self.inference_stride == 0:
+            self._run_inference()
+            
         return self._build_state()
 
     def _reset_on_idle(self):
@@ -137,6 +149,25 @@ class ONNXInferenceEngine:
         self.current_top3 = []
         self._last_prediction = None
 
+    def get_raw_state(self) -> dict:
+        """
+        Return the per-frame, pre-stability inference state.
+
+        Unlike get_state() which only updates after the stability vote confirms
+        a sign, this reflects the model's *raw* output from the most recent
+        inference call (every stride=4 frames).  Use this for the live debug HUD
+        so the user can see model output even before the stability window fills.
+        """
+        return {
+            "raw_prediction": self._last_prediction,
+            "raw_confidence": self._last_confidence,
+            "raw_top3": list(self._last_top3),
+            "vote_window_size": len(self._vote_window),
+            "vote_window_capacity": STABILITY_WINDOW,
+            "buffer_progress": len(self.frame_buffer),
+            "buffer_capacity": self.seq_len,
+        }
+
     # ── Internal ────────────────────────────────────────────────────────
 
     def _extract_frame(self, hand_data: dict) -> dict:
@@ -144,8 +175,8 @@ class ONNXInferenceEngine:
         left = hand_data.get("left_hand", {})
         right = hand_data.get("right_hand", {})
 
-        left_lm = np.asarray(left.get("landmarks", []), dtype=np.float32)
-        right_lm = np.asarray(right.get("landmarks", []), dtype=np.float32)
+        left_lm = np.asarray(left.get("isometric_landmarks", left.get("landmarks", [])), dtype=np.float32)
+        right_lm = np.asarray(right.get("isometric_landmarks", right.get("landmarks", [])), dtype=np.float32)
 
         left_present = bool(left.get("present", False))
         right_present = bool(right.get("present", False))
@@ -215,36 +246,39 @@ class ONNXInferenceEngine:
         self._last_prediction = best_label
         self._last_confidence = best_confidence
 
-        # A2: Majority-vote stability filter
-        self._apply_stability(best_label, best_confidence)
+        # A2: Soft voting stability filter
+        self._apply_stability(probs)
 
-    def _apply_stability(self, label: str, confidence: float):
-        """Majority-vote over recent predictions — much more robust than consecutive frames."""
-        # Drop low-confidence frames from the vote
-        if confidence < MIN_CONFIDENCE:
-            return
-
-        self._vote_window.append(label)
+    def _apply_stability(self, probs: np.ndarray):
+        """Soft-vote (probability averaging) over recent predictions."""
+        self._vote_window.append(probs)
 
         if len(self._vote_window) < STABILITY_WINDOW:
             return  # Not enough data yet
 
-        # Count votes
-        from collections import Counter
-        counts = Counter(self._vote_window)
-        top_label, top_count = counts.most_common(1)[0]
-        vote_fraction = top_count / len(self._vote_window)
+        # Compute average probabilities
+        avg_probs = np.mean(list(self._vote_window), axis=0)
+        
+        top_label_idx = int(np.argmax(avg_probs))
+        top_confidence = float(avg_probs[top_label_idx])
+        top_label = self.idx_to_label[top_label_idx]
 
-        if vote_fraction >= STABILITY_THRESHOLD:
+        if top_confidence >= STABILITY_THRESHOLD:
             now = time.time()
             if now - self._last_confirmed_time >= self.cooldown_seconds:
                 self.current_prediction = top_label
-                self.current_confidence = confidence
-                self.current_top3 = self._last_top3
+                self.current_confidence = top_confidence
+                
+                # Calculate top 3 from avg_probs for the UI
+                top3_idx = np.argsort(avg_probs)[-3:][::-1]
+                self.current_top3 = [
+                    (self.idx_to_label[int(i)], float(avg_probs[i])) for i in top3_idx
+                ]
+                
                 self._last_confirmed_time = now
                 logger.info(
-                    "Sign confirmed: %s (conf=%.3f, vote=%.0f%%)",
-                    top_label, confidence, vote_fraction * 100,
+                    "Sign confirmed: %s (conf=%.3f)",
+                    top_label, top_confidence,
                 )
                 self._log_prediction()
                 # Clear window after confirmation to prevent immediate re-fire
