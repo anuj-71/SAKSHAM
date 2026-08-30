@@ -30,7 +30,7 @@ class SignLanguageEngine:
         self.dataset_manager = DatasetManager()
         self.on_sign_recognized = on_sign_recognized
         self.confidence_threshold = CONFIDENCE_THRESHOLD
-        self.cooldown_seconds = 2.5
+        self.cooldown_seconds = 3.0
         self._last_sign_time = 0.0
         self.sequence_buffer = deque(maxlen=SEQUENCE_LENGTH)
         self.sign_cooldowns: Dict[str, float] = {}
@@ -97,7 +97,7 @@ class SignLanguageEngine:
                 # Fire callback only once per confirmed prediction with 3.0s cooldown
                 new_pred = state.get("prediction")
                 now = time.time()
-                if new_pred:
+                if new_pred and new_pred != "null":
                     if (now - self._last_sign_time) >= self.cooldown_seconds:
                         self._last_sign_time = now
                         self._last_notified_sign = new_pred

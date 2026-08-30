@@ -196,11 +196,11 @@ def main():
     phrase_builder = PhraseBuilder(sign_map=SIGN_TO_PHRASE, speak_fn=tts_engine.speak)
 
     _last_sign_confirmed_time = 0.0
-    SIGN_COOLDOWN_SECONDS = 2.5
+    SIGN_COOLDOWN_SECONDS = 3.0
 
     def on_sign_recognized(raw_sign_label: str):
         nonlocal _last_sign_confirmed_time
-        if session.dataset_mode or not raw_sign_label:
+        if session.dataset_mode or not raw_sign_label or raw_sign_label == "null":
             return
         now = time.time()
         if (now - _last_sign_confirmed_time) < SIGN_COOLDOWN_SECONDS:

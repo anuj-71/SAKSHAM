@@ -33,9 +33,10 @@ logging.basicConfig(
 log = logging.getLogger("HolisticLandmarkRecorder")
 
 # ---------------------------------------------------------------------------
-# 13 Target Sign Classes & Performance Instructions
+# 13 Target Sign Classes + 1 Null Class & Performance Instructions
 # ---------------------------------------------------------------------------
 SIGN_INSTRUCTIONS: Dict[str, str] = {
+    "null": "Do random non-signs: wave loosely, open palm, move hand randomly, transition between positions. Do NOT do any real sign.",
     "bye": "Open hand, wave side to side",
     "drink": "Curve hand like holding a cup, tilt toward mouth",
     "food": "Bring fingertips to lips, tap twice",
@@ -68,40 +69,21 @@ def get_mediapipe_solutions():
 
 def extract_holistic_landmarks(results) -> Tuple[np.ndarray, bool]:
     """
-    Extracts 225 normalized coordinates (21 left + 21 right + 33 pose landmarks x 3 coords).
+    Extracts 225 invariant-normalized coordinates (21 left + 21 right + 33 pose landmarks x 3 coords).
     Returns (features_225_array, tracking_detected_bool).
     """
-    features = np.zeros(INPUT_FEATURES, dtype=np.float32)
+    from src.sign_language.normalization import normalize_holistic_frame
 
     has_left = results.left_hand_landmarks is not None
     has_right = results.right_hand_landmarks is not None
     has_pose = results.pose_landmarks is not None
     detected = has_left or has_right or has_pose
 
-    # Left Hand: 0..62
-    if has_left:
-        for idx, lm in enumerate(results.left_hand_landmarks.landmark[:21]):
-            slot = idx * 3
-            features[slot]     = lm.x
-            features[slot + 1] = lm.y
-            features[slot + 2] = lm.z
+    left_lms = np.array([(lm.x, lm.y, lm.z) for lm in results.left_hand_landmarks.landmark[:21]], dtype=np.float32) if has_left else None
+    right_lms = np.array([(lm.x, lm.y, lm.z) for lm in results.right_hand_landmarks.landmark[:21]], dtype=np.float32) if has_right else None
+    pose_lms = np.array([(lm.x, lm.y, lm.z) for lm in results.pose_landmarks.landmark[:33]], dtype=np.float32) if has_pose else None
 
-    # Right Hand: 63..125
-    if has_right:
-        for idx, lm in enumerate(results.right_hand_landmarks.landmark[:21]):
-            slot = 63 + (idx * 3)
-            features[slot]     = lm.x
-            features[slot + 1] = lm.y
-            features[slot + 2] = lm.z
-
-    # Pose: 126..224
-    if has_pose:
-        for idx, lm in enumerate(results.pose_landmarks.landmark[:33]):
-            slot = 126 + (idx * 3)
-            features[slot]     = lm.x
-            features[slot + 1] = lm.y
-            features[slot + 2] = lm.z
-
+    features = normalize_holistic_frame(left_lms, right_lms, pose_lms)
     return features, detected
 
 

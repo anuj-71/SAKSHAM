@@ -6,10 +6,11 @@
   "home": 4,
   "hungry": 5,
   "no": 6,
-  "please": 7,
-  "sick": 8,
-  "sleep": 9,
-  "thankyou": 10,
-  "where": 11,
-  "yes": 12
+  "null": 7,
+  "please": 8,
+  "sick": 9,
+  "sleep": 10,
+  "thankyou": 11,
+  "where": 12,
+  "yes": 13
 }

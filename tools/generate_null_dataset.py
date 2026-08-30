@@ -13,19 +13,23 @@ Simulates:
 Output shape: (30, 225) float32 saved as .npz into dataset/processed/kaggle_holistic/null/
 """
 
+import sys
 import argparse
 import logging
 from pathlib import Path
 import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
-log = logging.getLogger("NullDataGenerator")
+log = logging.getLogger("NullGenerator")
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT_DIR = PROJECT_ROOT / "dataset" / "processed" / "kaggle_holistic" / "null"
 
 SEQUENCE_LENGTH = 30
@@ -110,16 +114,18 @@ def generate_null_sample(sample_type: int) -> np.ndarray:
 
 
 def generate_null_dataset(out_dir: Path, num_samples: int = 400):
+    from src.sign_language.normalization import normalize_raw_225_sequence
     out_dir.mkdir(parents=True, exist_ok=True)
-    log.info("Generating %d synthetic null/idle samples in %s...", num_samples, out_dir)
+    log.info("Generating %d synthetic invariant-normalized null/idle samples in %s...", num_samples, out_dir)
 
     for i in range(num_samples):
         st = i % 4
         arr = generate_null_sample(st)
+        norm_arr = normalize_raw_225_sequence(arr)
         out_path = out_dir / f"null_seq_{i:04d}.npz"
-        np.savez_compressed(out_path, features=arr, isometric_landmarks=arr)
+        np.savez_compressed(out_path, features=norm_arr, isometric_landmarks=norm_arr)
 
-    log.info("Successfully generated %d null sequences.", num_samples)
+    log.info("Successfully generated %d normalized null sequences.", num_samples)
 
 
 if __name__ == "__main__":

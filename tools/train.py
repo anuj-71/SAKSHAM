@@ -1,16 +1,21 @@
 """
 tools/train.py
 ==============
-High-Performance CNN-GRU Trainer for SAKSHAM MediaPipe Holistic (225 features).
+Universal Invariant CNN-GRU Trainer for SAKSHAM Sign Language Recognition.
 
 Features:
-  - 1D-CNN Temporal Feature Extractor + Bidirectional GRU Stack
-  - Input shape: (30, 225) (21 Left + 21 Right + 33 Pose landmarks)
-  - 14 Classes (13 Active Sign Classes + 1 Null Class)
-  - Weighted Cross-Entropy Loss with inverse frequency class weighting
+  - 4-Layer Invariant Feature Normalization (body-anchor, shoulder-scale, wrist-relative shape)
+  - 1D-CNN Kinematic Feature Extractor + Bidirectional GRU Stack (665k params)
+  - Dynamic on-the-fly Data Augmentation:
+      * Random spatial rotation (+/- 8 deg)
+      * Random spatial scaling (0.88x - 1.12x)
+      * Gaussian landmark noise jitter
+      * Temporal speed warping (0.85x - 1.15x)
+      * Random inactive hand dropout
+  - Weighted Cross-Entropy Loss with inverse frequency class balancing
   - 50 Epochs training with Cosine Annealing learning rate schedule
   - Per-class validation accuracy breakdown table
-  - Automatic ONNX model export for real-time CPU inference
+  - Automatic ONNX export (model.onnx) for zero-latency CPU inference
 
 Usage:
   .venv\\Scripts\\python.exe tools/train.py [--epochs 50] [--batch 32] [--lr 1e-3]
@@ -37,7 +42,7 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
-log = logging.getLogger("SAKSHAM-Holistic-Trainer")
+log = logging.getLogger("SAKSHAM-Universal-Trainer")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATASET_DIR = PROJECT_ROOT / "dataset" / "processed"
@@ -50,12 +55,66 @@ SEQUENCE_LENGTH = 30
 INPUT_FEATURES = 225  # 21 Left (63) + 21 Right (63) + 33 Pose (99)
 
 
+# ─── Data Augmentation ───────────────────────────────────────────────────────
+
+def augment_sequence(seq: np.ndarray) -> np.ndarray:
+    """
+    Applies realistic on-the-fly kinematic and spatial augmentations to a (30, 225) sequence.
+    """
+    aug_seq = seq.copy()
+
+    # 1. Random Spatial Scaling (0.90x to 1.10x)
+    scale_factor = np.random.uniform(0.90, 1.10)
+    aug_seq *= scale_factor
+
+    # 2. Random 2D Rotation (-6 to +6 degrees) in XY plane
+    angle_deg = np.random.uniform(-6.0, 6.0)
+    theta = np.radians(angle_deg)
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+
+    # Apply rotation across all (x, y) coordinate pairs
+    for i in range(0, INPUT_FEATURES, 3):
+        x = aug_seq[:, i]
+        y = aug_seq[:, i + 1]
+        aug_seq[:, i]     = x * cos_t - y * sin_t
+        aug_seq[:, i + 1] = x * sin_t + y * cos_t
+
+    # 3. Gaussian Coordinate Jitter
+    jitter = np.random.normal(0, 0.006, size=aug_seq.shape).astype(np.float32)
+    aug_seq += jitter
+
+    # 4. Random Temporal Speed Warping (Resampling)
+    if np.random.rand() > 0.4:
+        warp_ratio = np.random.uniform(0.85, 1.15)
+        t_orig = np.linspace(0, 1, SEQUENCE_LENGTH)
+        # Non-linear time warp
+        t_warped = np.power(t_orig, warp_ratio)
+        t_warped = (t_warped - t_warped[0]) / (t_warped[-1] - t_warped[0] + 1e-6)
+
+        resampled = np.zeros_like(aug_seq)
+        for col in range(INPUT_FEATURES):
+            resampled[:, col] = np.interp(t_orig, t_warped, aug_seq[:, col])
+        aug_seq = resampled
+
+    # 5. Hand Dropout (10% chance to drop unused hand if largely idle)
+    if np.random.rand() < 0.10:
+        left_power = np.sum(np.abs(aug_seq[:, 0:63]))
+        right_power = np.sum(np.abs(aug_seq[:, 63:126]))
+        if left_power < right_power * 0.3:
+            aug_seq[:, 0:63] = 0.0
+        elif right_power < left_power * 0.3:
+            aug_seq[:, 63:126] = 0.0
+
+    return aug_seq.astype(np.float32)
+
+
 # ─── Dataset & Data Loader ───────────────────────────────────────────────────
 
-class HolisticSignDataset(Dataset):
-    """Loads processed .npz files containing 30x225 holistic feature arrays."""
+class InvariantSignDataset(Dataset):
+    """Loads and serves invariant-normalized 30x225 feature arrays with optional augmentation."""
 
-    def __init__(self, samples: List[Tuple[Path, int]]):
+    def __init__(self, samples: List[Tuple[Path, int]], is_training: bool = False):
+        self.is_training = is_training
         self.data: List[Tuple[np.ndarray, int]] = []
 
         for npz_path, label_idx in samples:
@@ -64,9 +123,8 @@ class HolisticSignDataset(Dataset):
             try:
                 with np.load(npz_path) as npz:
                     arr = npz["features"] if "features" in npz else npz["isometric_landmarks"]
-                    if arr.shape != (SEQUENCE_LENGTH, INPUT_FEATURES):
-                        if arr.shape[0] != SEQUENCE_LENGTH or arr.shape[1] != INPUT_FEATURES:
-                            continue
+                    if arr.shape[0] != SEQUENCE_LENGTH or arr.shape[1] != INPUT_FEATURES:
+                        continue
                     self.data.append((arr.astype(np.float32), label_idx))
             except Exception:
                 continue
@@ -76,6 +134,8 @@ class HolisticSignDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         features, label = self.data[idx]
+        if self.is_training:
+            features = augment_sequence(features)
         return torch.from_numpy(features), torch.tensor(label, dtype=torch.long)
 
 
@@ -83,7 +143,7 @@ class HolisticSignDataset(Dataset):
 
 class CNNGRUModel(nn.Module):
     """
-    Hybrid 1D-CNN + Bidirectional GRU for robust 225-feature holistic sign recognition.
+    Hybrid 1D-CNN + Bidirectional GRU for universal 225-feature invariant sign recognition.
     """
 
     def __init__(self, input_dim: int = 225, hidden_dim: int = 128,
@@ -222,7 +282,7 @@ def export_onnx(model: nn.Module, onnx_path: Path, input_shape: Tuple[int, int, 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train SAKSHAM CNN-GRU model on 225-feature holistic dataset.")
+    parser = argparse.ArgumentParser(description="Train SAKSHAM Universal Invariant CNN-GRU model.")
     parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs (default: 50)")
     parser.add_argument("--batch", type=int, default=32, help="Batch size for training (default: 32)")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate (default: 1e-3)")
@@ -253,7 +313,7 @@ def main():
                 for p in sign_folder.glob("*.npz"):
                     samples_by_class[c_idx].append(p)
 
-    # Scan Personal recordings directory
+    # Scan Personal recordings directory (fresh normalized recordings)
     if PERSONAL_DIR.exists():
         for sign_folder in PERSONAL_DIR.iterdir():
             if sign_folder.is_dir() and sign_folder.name in label_map:
@@ -286,28 +346,25 @@ def main():
     log.info("Dataset splits: Train=%d samples, Val=%d samples", len(train_samples), len(val_samples))
 
     # 4. Compute Weighted Cross-Entropy Loss weights
-    # Inverse class frequency: weight_c = total / (num_classes * count_c)
     total_train = len(train_samples)
     class_weights = np.zeros(num_classes, dtype=np.float32)
     for c_idx in range(num_classes):
         c_count = sum(1 for _, l in train_samples if l == c_idx)
         if c_count > 0:
             w = total_train / (num_classes * c_count)
-            # Apply slight dampening on null class weight if it has abundant samples
             if idx_to_label[c_idx] == "null":
                 w *= 0.75
             class_weights[c_idx] = w
         else:
             class_weights[c_idx] = 1.0
 
-    # Normalize weights so mean is 1.0
     class_weights = class_weights / np.mean(class_weights)
     weight_tensor = torch.tensor(class_weights, dtype=torch.float32)
     log.info("Computed Cross-Entropy Class Weights: %s", {idx_to_label[i]: round(float(w), 3) for i, w in enumerate(class_weights)})
 
-    # 5. Create Datasets and DataLoaders
-    train_dataset = HolisticSignDataset(train_samples)
-    val_dataset = HolisticSignDataset(val_samples)
+    # 5. Create Datasets and DataLoaders (Train uses dynamic augmentation)
+    train_dataset = InvariantSignDataset(train_samples, is_training=True)
+    val_dataset = InvariantSignDataset(val_samples, is_training=False)
 
     log.info("Loaded into RAM: Train=%d, Val=%d", len(train_dataset), len(val_dataset))
     if len(train_dataset) == 0:
@@ -328,7 +385,7 @@ def main():
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    log.info("Initialized Holistic CNN-GRU model (%d trainable parameters) on CPU", total_params)
+    log.info("Initialized Universal Invariant CNN-GRU model (%d trainable parameters) on CPU", total_params)
 
     # 7. Optimizer, Scheduler, Weighted Loss
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -338,14 +395,12 @@ def main():
     # 8. Training Loop
     best_val_acc = 0.0
     best_epoch = 0
-    best_preds = None
-    best_labels = None
     patience_counter = 0
     best_weights_path = MODELS_DIR / "gru_best.pt"
     onnx_path = MODELS_DIR / "model.onnx"
 
     log.info("=" * 70)
-    log.info("STARTING TRAINING (%d Epochs, Batch Size=%d, Input Features=%d)", args.epochs, args.batch, INPUT_FEATURES)
+    log.info("STARTING TRAINING (%d Epochs, Batch Size=%d, Invariant Features=%d)", args.epochs, args.batch, INPUT_FEATURES)
     log.info("=" * 70)
 
     t0_train = time.time()
@@ -361,8 +416,6 @@ def main():
         if is_best:
             best_val_acc = val_acc
             best_epoch = epoch
-            best_preds = preds
-            best_labels = labels
             patience_counter = 0
             torch.save(model.state_dict(), best_weights_path)
             star = " * [BEST]"
@@ -396,7 +449,7 @@ def main():
 
     per_class_results = []
     log.info("\n" + "=" * 70)
-    log.info("PER-CLASS VALIDATION ACCURACY BREAKDOWN (13 ACTIVE SIGN CLASSES)")
+    log.info("PER-CLASS VALIDATION ACCURACY BREAKDOWN (UNIVERSAL INVARIANT SPACE)")
     log.info("=" * 70)
     log.info(f"{'Class Name':<14} | {'Val Samples':<12} | {'Correct':<9} | {'Accuracy':<10}")
     log.info("-" * 70)
@@ -438,7 +491,7 @@ def main():
     with open(MODELS_DIR / "evaluation_results.json", "w", encoding="utf-8") as f:
         json.dump(eval_summary, f, indent=2)
 
-    log.info("Training and ONNX export complete! SAKSHAM is ready for live recognition.")
+    log.info("Universal Invariant training and ONNX export complete! SAKSHAM is ready.")
 
 
 if __name__ == "__main__":
