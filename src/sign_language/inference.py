@@ -8,8 +8,7 @@ import json
 import logging
 import os
 import time
-from collections import deque
-from pathlib import Path
+from collections import Counter, deque
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -18,10 +17,10 @@ logger = logging.getLogger("ONNXInferenceEngine")
 
 SEQ_LEN = 30
 FEATURE_DIM = 225            # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
-STABILITY_WINDOW = 5         # Number of recent frames for soft-vote stability
-STABILITY_THRESHOLD = 0.75   # Probability threshold to confirm a sign
+VOTING_BUFFER_SIZE = 10      # Collect last 10 frames of predictions
+VOTING_CONFIRM_THRESHOLD = 7 # Confirm only if same class appears in >= 7 of 10 frames
 MIN_CONFIDENCE = 0.75        # Minimum confidence threshold (idle/null filter)
-STABILITY_COOLDOWN = 3.0     # 3.0s hard cooldown between confirmed signs
+STABILITY_COOLDOWN = 3.0     # 3.0s hard timestamp cooldown between confirmed signs
 IDLE_TIMEOUT = 0.8           # Seconds of no-hands before clearing buffer
 PREDICTION_LOG_PATH = os.path.join("exports", "onnx_predictions.jsonl")
 
@@ -35,7 +34,8 @@ class ONNXInferenceEngine:
         label_map_path: str,
         seq_len: int = SEQ_LEN,
         min_confidence: float = MIN_CONFIDENCE,
-        stability_frames: int = STABILITY_WINDOW,
+        voting_buffer_size: int = VOTING_BUFFER_SIZE,
+        voting_confirm_threshold: int = VOTING_CONFIRM_THRESHOLD,
         cooldown_seconds: float = STABILITY_COOLDOWN,
     ):
         import onnxruntime as ort
@@ -56,12 +56,16 @@ class ONNXInferenceEngine:
         # Sliding window buffer: stores (225,) numpy arrays
         self.frame_buffer: deque[np.ndarray] = deque(maxlen=seq_len)
 
-        # Stability filter state
+        # 10-Frame Voting Buffer and Hard 3.0s Timestamp Cooldown
+        self.voting_buffer_size = voting_buffer_size
+        self.voting_confirm_threshold = voting_confirm_threshold
+        self.prediction_history: deque[str] = deque(maxlen=voting_buffer_size)
+        self._vote_window: deque[np.ndarray] = deque(maxlen=voting_buffer_size)
+
         self.cooldown_seconds = cooldown_seconds
-        self.inference_stride = 2  # Run inference every 2 frames for ultra-smooth responsiveness
+        self.inference_stride = 1  # Evaluate every frame for dense 10-frame voting
         self.frame_counter = 0
-        self._vote_window: deque[np.ndarray] = deque(maxlen=stability_frames)
-        self._last_confirmed_time = 0.0
+        self._last_confirmed_time: float = 0.0
         self._last_prediction: Optional[str] = None
         self._last_confidence: float = 0.0
         self._last_top3: list[tuple[str, float]] = []
@@ -74,11 +78,9 @@ class ONNXInferenceEngine:
         self.current_confidence: float = 0.0
         self.current_top3: list[tuple[str, float]] = []
 
-        self.stability_frames = stability_frames
-
         logger.info(
-            "ONNX CNN-GRU Engine loaded: %d classes, seq_len=%d, min_conf=%.2f, cooldown=%.1fs",
-            self.num_classes, seq_len, min_confidence, cooldown_seconds,
+            "ONNX CNN-GRU Engine loaded: %d classes, seq_len=%d, min_conf=%.2f, voting=%d/%d, cooldown=%.1fs",
+            self.num_classes, seq_len, min_confidence, voting_confirm_threshold, voting_buffer_size, cooldown_seconds,
         )
 
     def add_frame(self, hand_data: dict) -> dict:
@@ -114,8 +116,9 @@ class ONNXInferenceEngine:
         return self._build_state()
 
     def _reset_on_idle(self):
-        """Clear frame buffer and vote window when hands/pose are absent."""
+        """Clear frame buffer and voting history when hands/pose are absent."""
         self.frame_buffer.clear()
+        self.prediction_history.clear()
         self._vote_window.clear()
         self.current_prediction = None
         self.current_confidence = 0.0
@@ -127,6 +130,7 @@ class ONNXInferenceEngine:
 
     def reset(self):
         self.frame_buffer.clear()
+        self.prediction_history.clear()
         self._vote_window.clear()
         self.current_prediction = None
         self.current_confidence = 0.0
@@ -138,8 +142,8 @@ class ONNXInferenceEngine:
             "raw_prediction": self._last_prediction,
             "raw_confidence": self._last_confidence,
             "raw_top3": list(self._last_top3),
-            "vote_window_size": len(self._vote_window),
-            "vote_window_capacity": self.stability_frames,
+            "vote_window_size": len(self.prediction_history),
+            "vote_window_capacity": self.voting_buffer_size,
             "buffer_progress": len(self.frame_buffer),
             "buffer_capacity": self.seq_len,
         }
@@ -207,54 +211,73 @@ class ONNXInferenceEngine:
         best_label = self.idx_to_label.get(best_idx, "unknown")
         best_confidence = float(probs[best_idx])
 
+        # Treat null or low-confidence as "null"
         if best_label == "null" or best_confidence < self.min_confidence:
+            raw_prediction = "null"
             self._last_prediction = None
             self._last_confidence = 0.0
         else:
+            raw_prediction = best_label
             self._last_prediction = best_label
             self._last_confidence = best_confidence
 
-        # Soft voting stability filter
-        self._apply_stability(probs)
-
-    def _apply_stability(self, probs: np.ndarray):
+        # Record prediction into 10-frame voting history
+        self.prediction_history.append(raw_prediction)
         self._vote_window.append(probs)
 
-        if len(self._vote_window) < self.stability_frames:
+        # Apply 7/10 voting buffer & timestamp cooldown filter
+        self._apply_voting_confirmation()
+
+    def _apply_voting_confirmation(self):
+        """
+        Collects last 10 frames of predictions.
+        Confirms a sign ONLY if the same class appears in >= 7 of 10 frames.
+        Enforces a hard 3.0-second timestamp cooldown using time.time().
+        """
+        if len(self.prediction_history) < self.voting_buffer_size:
+            self.current_prediction = None
             return
 
-        avg_probs = np.mean(list(self._vote_window), axis=0)
-        best_idx = int(np.argmax(avg_probs))
-        confidence = float(avg_probs[best_idx])
-        label = self.idx_to_label.get(best_idx, "unknown")
+        # Count frequencies in the 10-frame window
+        counts = Counter(self.prediction_history)
+        most_common_label, count = counts.most_common(1)[0]
 
+        # Must meet the 7/10 agreement threshold and cannot be 'null'
+        if most_common_label == "null" or count < self.voting_confirm_threshold:
+            self.current_prediction = None
+            self.current_confidence = 0.0
+            self.current_top3 = []
+            return
+
+        # ── EXACT COOLDOWN CODE BLOCK (Persistent time.time() check) ──
         now = time.time()
-
-        # Fix 2: Idle / Null detection — if model predicts 'null' OR top confidence < 0.75, treat as no sign
-        if label == "null" or confidence < self.min_confidence:
+        elapsed = now - self._last_confirmed_time
+        if elapsed < self.cooldown_seconds:
+            # Under hard cooldown: block confirmation completely
             self.current_prediction = None
             self.current_confidence = 0.0
             self.current_top3 = []
             return
 
-        # Fix 1: Hard 3.0-second cooldown — block all confirmations during cooldown period
-        if (now - self._last_confirmed_time) < self.cooldown_seconds:
-            self.current_prediction = None
-            self.current_confidence = 0.0
-            self.current_top3 = []
-            return
+        # Passed 7/10 agreement AND 3.0s cooldown -> Confirm sign once!
+        avg_probs = np.mean(list(self._vote_window), axis=0)
+        c_idx = self.label_map.get(most_common_label, int(np.argmax(avg_probs)))
+        confidence = float(avg_probs[c_idx])
 
-        # Confirm sign
-        self.current_prediction = label
+        self.current_prediction = most_common_label
         self.current_confidence = confidence
         self.current_top3 = [
             (self.idx_to_label.get(int(i), f"class_{i}"), float(avg_probs[i]))
             for i in np.argsort(avg_probs)[-3:][::-1]
         ]
         self._last_confirmed_time = now
+
+        # Flush buffers to avoid duplicate triggers from the same physical gesture
+        self.prediction_history.clear()
         self._vote_window.clear()
         self.frame_buffer.clear()
-        logger.info("Confirmed Sign: %s (confidence=%.1f%%)", label, confidence * 100.0)
+        logger.info("Confirmed Sign: %s (%d/%d frames agreement, conf=%.1f%%, cooldown 3.0s started)",
+                    most_common_label, count, self.voting_buffer_size, confidence * 100.0)
 
     def _build_state(self) -> dict:
         return {
