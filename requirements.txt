@@ -7,7 +7,7 @@ Pillow>=9.5.0
 
 # Computer Vision (headless for Linux cloud containers)
 opencv-python-headless>=4.8.0
-mediapipe>=0.10.0
+mediapipe==0.10.14
 
 # Web Framework
 streamlit>=1.30.0
