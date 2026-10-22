@@ -12,6 +12,7 @@ rich>=13.0.0
 # Computer Vision
 opencv-python>=4.8.0
 mediapipe>=0.10.0
+streamlit>=1.30.0
 
 # ONNX Runtime
 onnxruntime>=1.16.0
