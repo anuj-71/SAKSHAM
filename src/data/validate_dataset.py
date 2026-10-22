@@ -310,8 +310,9 @@ class DatasetValidator:
 
 
 if __name__ == "__main__":
-    dataset_root = "E:/gessture/SAKSHAM_DATASET"
-    output_path = "E:/gessture/reports/dataset_report.md"
+    project_root = Path(__file__).resolve().parent.parent.parent
+    dataset_root = str(project_root / "dataset")
+    output_path = str(project_root / "reports" / "dataset_report.md")
     
     validator = DatasetValidator(dataset_root)
     success = validator.run(output_path)

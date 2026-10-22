@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Model configuration constants
 SEQUENCE_LENGTH = 30
 INPUT_FEATURES = 225       # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
-CONFIDENCE_THRESHOLD = 0.75
+CONFIDENCE_THRESHOLD = 0.45
 
 # Model artefacts live in the top-level models/ directory
 MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / "model.onnx"

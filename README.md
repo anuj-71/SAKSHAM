@@ -97,26 +97,26 @@ The project is built with a modular architecture, allowing each subsystem—visi
 ```text
 SAKSHAM/
 │
-├── configs/
-├── dataset/
-├── exports/
-├── models/
-├── outputs/
-├── reports/
-├── SAKSHAM_DATASET/
-├── src/
-│   ├── camera/
-│   ├── sign_language/
-│   ├── speech/
-│   ├── ui/
-│   └── main.py
+├── configs/                # Hyperparameter & application configurations
+├── dataset/                # Active dataset partitions & processed samples
+├── models/                 # Model checkpoints (.pt) & exported ONNX models
+├── exports/                # Exported session transcripts & logs
+├── outputs/                # Evaluation & inference outputs
+├── reports/                # Benchmark and analysis reports
 │
-├── tools/
-├── tts_cache/
-├── requirements.txt
-├── INSTALLATION.md
-├── PROJECT_STATUS.md
-└── README.md
+├── src/                    # Core application source code
+│   ├── camera/             # Video capture & thread management
+│   ├── sign_language/      # Landmark tracking, normalization & inference
+│   ├── speech/             # Speech-to-Text & Text-to-Speech engines
+│   ├── ui/                 # Split-screen renderer & live transcript widget
+│   └── main.py             # Main application orchestrator
+│
+├── tools/                  # Data recording, extraction & training scripts
+├── tests/                  # Unit and integration test suites
+│
+├── requirements.txt        # Python dependency manifest
+├── INSTALLATION.md         # Environment setup instructions
+└── README.md               # System documentation & quickstart
 ```
 
 ---

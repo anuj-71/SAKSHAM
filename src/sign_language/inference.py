@@ -19,8 +19,8 @@ logger = logging.getLogger("ONNXInferenceEngine")
 SEQ_LEN = 30
 FEATURE_DIM = 225            # 21 Left Hand (63) + 21 Right Hand (63) + 33 Pose (99)
 STABILITY_WINDOW = 2         # Instant 2-frame trigger (fast responsiveness)
-STABILITY_THRESHOLD = 0.65   # Probability threshold to confirm a sign
-MIN_CONFIDENCE = 0.65        # Minimum confidence threshold (idle/null filter)
+STABILITY_THRESHOLD = 0.45   # Probability threshold to confirm a sign
+MIN_CONFIDENCE = 0.45        # Minimum confidence threshold (idle/null filter)
 STABILITY_COOLDOWN = 2.0     # 2.0s hard cooldown between confirmed signs
 IDLE_TIMEOUT = 0.8           # Seconds of no-hands before clearing buffer
 PREDICTION_LOG_PATH = os.path.join("exports", "onnx_predictions.jsonl")
@@ -161,6 +161,16 @@ class ONNXInferenceEngine:
     def _run_inference(self):
         """Run clean ambidextrous ONNX CNN-GRU inference on the current (30, 225) buffer."""
         frames = np.stack(list(self.frame_buffer), axis=0).astype(np.float32)  # (30, 225)
+
+        # Motion gate: compute frame-to-frame landmark delta across buffer
+        deltas = np.diff(frames, axis=0)
+        motion_energy = float(np.mean(np.abs(deltas)))
+        if motion_energy < 0.008:
+            self._last_prediction = None
+            self._last_confidence = 0.0
+            self._last_top3 = []
+            return
+
         input_tensor = np.expand_dims(frames, axis=0)  # (1, 30, 225)
 
         # Mirrored frames for left/right hand ambidextrous symmetry
@@ -198,7 +208,9 @@ class ONNXInferenceEngine:
         best_label = self.idx_to_label.get(best_idx, "unknown")
         best_confidence = float(probs[best_idx])
 
-        if best_label == "null" or best_confidence < self.min_confidence:
+        # Threshold gate: 90% required for 'null' (no sign), 45% for active signs
+        min_thresh = 0.90 if best_label == "null" else self.min_confidence
+        if best_confidence < min_thresh:
             self._last_prediction = None
             self._last_confidence = 0.0
         else:
@@ -221,14 +233,15 @@ class ONNXInferenceEngine:
 
         now = time.time()
 
-        # Fix 2: Idle / Null detection — if model predicts 'null' OR top confidence < 0.75, treat as no sign
-        if label == "null" or confidence < self.min_confidence:
+        # Idle / Low confidence detection (90% required for null, 45% for active signs)
+        min_thresh = 0.90 if label == "null" else self.min_confidence
+        if confidence < min_thresh:
             self.current_prediction = None
             self.current_confidence = 0.0
             self.current_top3 = []
             return
 
-        # Fix 1: Hard 3.0-second cooldown — block all confirmations during cooldown period
+        # Hard 2.0-second cooldown — block rapid repeat confirmations
         if (now - self._last_confirmed_time) < self.cooldown_seconds:
             self.current_prediction = None
             self.current_confidence = 0.0

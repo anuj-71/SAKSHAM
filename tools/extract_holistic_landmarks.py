@@ -39,7 +39,7 @@ DATASET_DIR = PROJECT_ROOT / "dataset"
 DEFAULT_OUT_DIR = DATASET_DIR / "processed" / "kaggle_holistic"
 MODELS_DIR = PROJECT_ROOT / "models"
 
-# 13 Target Sign Classes (excluding water)
+# 13 Active Target Sign Classes
 TARGET_CLASSES = [
     "bye",
     "drink",
@@ -135,6 +135,13 @@ def process_parquet_file(parquet_path: Path) -> Optional[np.ndarray]:
 
     # 3. Pose (126..224: 33 landmarks)
     p_mask = (types == "pose") & (lm_indices >= 0) & (lm_indices < 33)
+    if np.any(p_mask):
+        pf = f_indices[p_mask]
+        p_offset = 126 + (lm_indices[p_mask] * 3)
+        raw_features[pf, p_offset]     = x_vals[p_mask]
+        raw_features[pf, p_offset + 1] = y_vals[p_mask]
+        raw_features[pf, p_offset + 2] = z_vals[p_mask]
+
     # Resample to 30 frames and apply 4-layer invariant normalization
     from src.sign_language.normalization import normalize_raw_225_sequence
     resampled = resample_sequence(raw_features, target_length=SEQUENCE_LENGTH)

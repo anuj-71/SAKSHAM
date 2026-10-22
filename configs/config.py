@@ -15,7 +15,7 @@ Layout:
 from pathlib import Path
 
 # Base paths
-PROJECT_ROOT   = Path(r"E:\gessture")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Dataset layout
 DATASET_ROOT       = PROJECT_ROOT / "dataset"

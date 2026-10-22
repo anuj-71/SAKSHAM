@@ -4,10 +4,10 @@ import cv2
 # SAKSHAM V1 CONFIGURATION SETTINGS
 # ==========================================
 
-# Camera Settings
+# Camera & UI Settings
 CAMERA_INDEX = 0          # Default system camera
-FRAME_WIDTH = 1280        # Camera capture width
-FRAME_HEIGHT = 720        # Camera capture height
+FRAME_WIDTH = 1920        # Full HD width for crisp UI rendering
+FRAME_HEIGHT = 1080       # Full HD height for crisp UI rendering
 TARGET_FPS = 30           # Limit frame processing rate to save CPU
 
 # Performance & Tracking Optimizations
@@ -36,13 +36,16 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
 # Styling & Theme (Accessibility First - High Contrast Dark Mode BGR Format)
-COLOR_BG = (30, 30, 30)            # Dark grey background
-COLOR_TEXT_PRIMARY = (240, 240, 240)  # Off-white text
-COLOR_TEXT_SECONDARY = (150, 150, 150) # Medium grey for timestamps
-COLOR_ACCENT = (255, 120, 50)       # Accent blue (BGR)
-COLOR_SUCCESS = (50, 200, 50)      # Green for ready states
-COLOR_WARNING = (0, 140, 255)      # Orange for warnings/processing
-COLOR_DIVIDER = (60, 60, 60)    # Dark grey borders
+COLOR_BG = (20, 9, 8)                # Overall canvas background #080914
+COLOR_TOPBAR = (17, 7, 6)            # Top bar background #060711
+COLOR_BOTTOMBAR = (17, 7, 6)         # Bottom bar background #060711
+COLOR_CAM_BG = (22, 13, 11)          # Camera panel background #0B0D16
+COLOR_CHAT_BG = (21, 12, 10)         # Chat panel background #0A0C15
+COLOR_TEXT_PRIMARY = (255, 255, 255) # Primary text #FFFFFF
+COLOR_TEXT_SECONDARY = (149, 137, 133) # Secondary/timestamp text #858995 (BGR)
+COLOR_ACCENT = (255, 229, 0)         # Primary cyan accent #00E5FF (BGR)
+COLOR_SUCCESS = (136, 255, 0)        # Active/mic green #00FF88 (BGR)
+COLOR_DIVIDER = (58, 26, 26)         # Borders and dividers #1a1a3a (BGR)
 
 # Font settings
 FONT_STYLE = cv2.FONT_HERSHEY_SIMPLEX

@@ -85,6 +85,10 @@ class GroqHybridSpeechEngine:
         self.silence_timeout = 1.1    # Seconds of silence to commit final sentence
         self.min_speech_duration = 0.4 # Minimum audio duration to send to Groq
 
+    @property
+    def is_running(self) -> bool:
+        return self.running
+
     def update_state(self, state: str):
         self.state = state
         logger.debug(f"STT state: {state}")

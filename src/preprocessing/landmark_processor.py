@@ -263,7 +263,8 @@ def compute_sequence_statistics(dataset_root: str, csv_path: str,
 
 if __name__ == "__main__":
     # Test processing
-    dataset_root = "E:/gessture/SAKSHAM_DATASET"
+    project_root = Path(__file__).resolve().parent.parent.parent
+    dataset_root = str(project_root / "dataset")
     csv_path = f"{dataset_root}/train_filtered.csv"
     
     # Compute statistics
@@ -281,7 +282,7 @@ if __name__ == "__main__":
     print(f"    Max: {stats['max_len']}")
     
     # Save statistics
-    output_path = "E:/gessture/reports/preprocessing_stats.json"
+    output_path = str(project_root / "reports" / "preprocessing_stats.json")
     with open(output_path, 'w') as f:
         json.dump(stats, f, indent=2)
     print(f"\nStatistics saved to {output_path}")

@@ -1,7 +1,16 @@
 from src.session_manager import ConversationSession
 
-s = ConversationSession()
-s.add_message('Test', 'Hello')
-print(f'Messages: {s.get_message_count()}, ExportStatus: "{s.last_export_status}"')
-s.export()
-print(f'After export - Status: "{s.last_export_status}", Path: "{s.last_export_path}"')
+
+def test_conversation_session_export():
+    s = ConversationSession()
+    s.add_message('Test', 'Hello')
+    assert s.get_message_count() == 1
+    assert s.last_export_status == ""
+    success = s.export()
+    assert success is True
+    assert s.last_export_status == "Success"
+    assert s.last_export_path.startswith("chat_")
+
+
+if __name__ == "__main__":
+    test_conversation_session_export()

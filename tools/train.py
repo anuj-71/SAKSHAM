@@ -352,8 +352,6 @@ def main():
         c_count = sum(1 for _, l in train_samples if l == c_idx)
         if c_count > 0:
             w = total_train / (num_classes * c_count)
-            if idx_to_label[c_idx] == "null":
-                w *= 0.75
             class_weights[c_idx] = w
         else:
             class_weights[c_idx] = 1.0

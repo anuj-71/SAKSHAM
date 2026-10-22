@@ -5,44 +5,42 @@ sys.path.insert(0, os.path.abspath('.'))
 import pytest
 from src.sign_language.engine import MODEL_PATH, LABEL_MAP_PATH
 from src.sign_language.inference import ONNXInferenceEngine
+from src.sign_language.engine import SignLanguageEngine
 import numpy as np
 
-print(f'Model exists: {MODEL_PATH.exists()}')
-print(f'Label map exists: {LABEL_MAP_PATH.exists()}')
-print('All imports OK')
 
-# Skip entire module gracefully when no model has been trained yet.
-# Once tools/train.py produces models/model.onnx, this guard becomes inactive.
-if not MODEL_PATH.exists():
-    pytest.skip(
-        f"model.onnx not found at {MODEL_PATH} — run tools/train.py first.",
-        allow_module_level=True,
-    )
+def test_inference_smoke_pipeline():
+    if not MODEL_PATH.exists():
+        pytest.skip(
+            f"model.onnx not found at {MODEL_PATH} - run tools/train.py first.",
+        )
 
-# Check the ONNX engine loads
-eng = ONNXInferenceEngine(str(MODEL_PATH), str(LABEL_MAP_PATH))
-print(f'Engine loaded: {eng.num_classes} classes')
-print(f'Label map: {eng.label_map}')
+    # Check the ONNX engine loads
+    eng = ONNXInferenceEngine(str(MODEL_PATH), str(LABEL_MAP_PATH))
+    assert eng.num_classes > 0
+    assert eng.label_map is not None
 
-# Test dummy frame
-state = eng.add_frame({
-    'left_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
-    'right_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
-})
-print(f'State after 1 frame: buffer={state["buffer_progress"]}/30')
-
-# Fill buffer
-for _ in range(30):
-    eng.add_frame({
+    # Test dummy frame
+    state = eng.add_frame({
         'left_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
         'right_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
     })
-state = eng.get_state()
-print(f'State after 30 frames: pred={state["prediction"]}, '
-      f'top3={[(l, f"{c:.3f}") for l,c in state["top3"]]}')
+    assert state["buffer_progress"] == 1
 
-# Check SignLanguageEngine initializes
-from src.sign_language.engine import SignLanguageEngine
-sl_engine = SignLanguageEngine()
-print(f'SL Engine inference loaded: {sl_engine.inference is not None}')
-print('All smoke tests passed!')
+    # Fill buffer
+    for _ in range(30):
+        eng.add_frame({
+            'left_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
+            'right_hand': {'present': True, 'landmarks': [(0.5, 0.5, 0.0)]*21},
+        })
+    state = eng.get_state()
+    assert state["buffer_progress"] == 30
+
+    # Check SignLanguageEngine initializes
+    sl_engine = SignLanguageEngine()
+    assert sl_engine.inference is not None
+
+
+if __name__ == "__main__":
+    test_inference_smoke_pipeline()
+    print("All smoke tests passed!")

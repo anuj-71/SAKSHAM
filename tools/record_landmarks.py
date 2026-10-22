@@ -36,20 +36,20 @@ log = logging.getLogger("HolisticLandmarkRecorder")
 # 13 Target Sign Classes + 1 Null Class & Performance Instructions
 # ---------------------------------------------------------------------------
 SIGN_INSTRUCTIONS: Dict[str, str] = {
-    "null": "Do random non-signs: wave loosely, open palm, move hand randomly, transition between positions. Do NOT do any real sign.",
     "bye": "Open hand, wave side to side",
     "drink": "Curve hand like holding a cup, tilt toward mouth",
-    "food": "Bring fingertips to lips, tap twice",
-    "hello": "Flat hand salute from forehead, move outward",
-    "home": "Fingertips to chin, then to cheek",
-    "hungry": "Curved hand on chest, move downward in C-shape",
-    "no": "Index and middle finger tap thumb twice",
-    "please": "Flat hand on chest, circular motion",
-    "sick": "Middle finger to forehead, other to stomach",
-    "sleep": "Open hand near face, close fingers downward",
-    "thankyou": "Flat hand from chin, move forward",
-    "where": "Index finger wagging side to side",
-    "yes": "Fist, nod up and down (wrist motion)",
+    "food": "Bring fingertips together and tap lips twice",
+    "hello": "Flat hand salute/wave from temple outward",
+    "home": "Bring fingertips to chin, then to cheek",
+    "hungry": "Curved hand on chest, move downward in a C-shape",
+    "no": "Index and middle finger snap shut onto thumb twice",
+    "null": "Sit still, hands resting in lap, no signing motion at all",
+    "please": "Flat hand on center of chest, rub in small clockwise circle",
+    "sick": "Middle finger touches forehead, other hand touches stomach (or forehead alone)",
+    "sleep": "Open hand in front of face, fingers draw down and close as head tilts",
+    "thankyou": "Flat hand touches chin, then moves forward and down toward person",
+    "where": "Index finger pointing upward, wag side to side like a windshield wiper",
+    "yes": "Closed fist (S-hand), nod up and down with wrist motion",
 }
 
 SEQUENCE_LENGTH = 30

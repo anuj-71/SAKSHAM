@@ -256,7 +256,8 @@ def create_dataloaders(dataset_root: str,
 
 if __name__ == "__main__":
     # Test dataset
-    dataset_root = "E:/gessture/SAKSHAM_DATASET"
+    project_root = Path(__file__).resolve().parent.parent.parent
+    dataset_root = str(project_root / "dataset")
     csv_path = f"{dataset_root}/train_filtered.csv"
     sign_map_path = f"{dataset_root}/sign_map.json"
     
@@ -268,7 +269,7 @@ if __name__ == "__main__":
         batch_size=8,
         max_seq_len=128,
         num_workers=0,
-        cache_dir="E:/gessture/dataset/processed/cache"
+        cache_dir=str(project_root / "dataset" / "processed" / "cache")
     )
     
     # Test loading a batch

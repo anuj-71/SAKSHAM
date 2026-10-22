@@ -83,6 +83,8 @@ reports/
 *.tmp
 *.bak
 .cache/
+.uploads/
+scratch/
 scratch_inspect_ckpt.py
 
 # ── Sensitive / private ───────────────────────────────────────────────────────

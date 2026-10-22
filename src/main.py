@@ -6,7 +6,10 @@ import ctypes
 # Enable high-DPI awareness on Windows to prevent OS bitmap blurring
 try:
     if sys.platform == "win32":
-        ctypes.windll.user32.SetProcessDPIAware()
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
 except Exception:
     pass
 
@@ -72,25 +75,61 @@ else:
 # Global state for OpenCV callbacks
 scroll_offset = 0
 global_session = None
+global_ui = None
 global_live_widget = None
 global_toggle_mic_fn = None
+global_export_fn = None
+global_toggle_fullscreen_fn = None
+global_request_quit = False
 
 def mouse_callback(event, x, y, flags, param):
-    global scroll_offset, global_session, global_live_widget, global_toggle_mic_fn
+    global scroll_offset, global_session, global_ui, global_live_widget
+    global global_toggle_mic_fn, global_export_fn, global_toggle_fullscreen_fn, global_request_quit
+
     if event == cv2.EVENT_MOUSEWHEEL:
         if flags > 0:
             scroll_offset += 1  # Scroll Up
         else:
             scroll_offset -= 1  # Scroll Down
     elif event == cv2.EVENT_LBUTTONDOWN:
+        # Check Top Bar buttons
+        if global_ui:
+            top_action = global_ui.handle_click(x, y)
+            if top_action == "mic":
+                if global_toggle_mic_fn:
+                    global_toggle_mic_fn()
+                return
+            elif top_action == "clear":
+                if global_session:
+                    global_session.clear()
+                return
+            elif top_action == "fullscreen" or top_action == "maximize":
+                if global_toggle_fullscreen_fn:
+                    global_toggle_fullscreen_fn()
+                return
+            elif top_action == "export":
+                if global_export_fn:
+                    global_export_fn()
+                return
+            elif top_action == "close":
+                global_request_quit = True
+                return
+
+        # Check Bottom Bar widgets
         if global_live_widget and global_session:
             zone = global_live_widget.handle_click(x, y)
             if zone == 'mic':
                 if global_toggle_mic_fn:
                     global_toggle_mic_fn()
                 global_session.is_typing_focused = False
-            elif zone == 'plus':
-                global_session.clear()
+            elif zone == 'export':
+                if global_export_fn:
+                    global_export_fn()
+                global_session.is_typing_focused = False
+            elif zone == 'send':
+                if global_session.typing_buffer.strip():
+                    global_session.add_message("Hearing Person", global_session.typing_buffer.strip(), source="Typed")
+                    global_session.typing_buffer = ""
                 global_session.is_typing_focused = False
             elif zone == 'text':
                 global_session.is_typing_focused = True
@@ -117,8 +156,19 @@ def main():
         logging.critical("Failed to start the camera. Exiting.")
         sys.exit(1)
 
-    ui = UIRenderer(width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT)
-    live_widget = LiveTranscriptWidget(bar_height=80)
+    # Detect native monitor resolution for 1:1 pixel-perfect fullscreen rendering
+    ui_w, ui_h = config.FRAME_WIDTH, config.FRAME_HEIGHT
+    try:
+        if sys.platform == "win32":
+            scr_w = ctypes.windll.user32.GetSystemMetrics(0)
+            scr_h = ctypes.windll.user32.GetSystemMetrics(1)
+            if scr_w >= 1280 and scr_h >= 720:
+                ui_w, ui_h = scr_w, scr_h
+    except Exception:
+        pass
+
+    ui = UIRenderer(width=ui_w, height=ui_h)
+    live_widget = LiveTranscriptWidget(bar_height=ui.bottom_bar_h)
     
     # ── Text-to-Speech Engine ──
     def on_tts_start():
@@ -144,13 +194,13 @@ def main():
         "no":       "No.",
         "please":   "Please.",
         "thankyou": "Thank you!",
-        "food":     "Food.",
-        "drink":    "Drink.",
+        "food":     "I want food.",
+        "drink":    "I need a drink of water.",
+        "home":     "I want to go home.",
         "hungry":   "I am hungry.",
-        "home":     "Home.",
         "sick":     "I feel sick.",
-        "sleep":    "I want to sleep.",
-        "where":    "Where are you?",
+        "sleep":    "I am sleepy.",
+        "where":    "Where?",
     }
 
     class PhraseBuilder:
@@ -246,8 +296,6 @@ def main():
             callback=lambda text: (on_speech_text(text), live_widget.set_final(text)),
             preview_callback=lambda text: (session.set_draft(text), live_widget.set_preview(text))
         )
-        # Monkeypatch Groq engine to support UI state and is_running property
-        speech_engine.is_running = property(lambda self: getattr(self, "running", False))
         original_update_state = speech_engine.update_state
         def _patched_update_state(state):
             original_update_state(state)
@@ -370,26 +418,50 @@ def main():
         refresh_dataset_insights()
         session.set_toast(f"Dataset exported: {len(exported_files)} files", duration=4.0)
 
-    # Bind global references for mouse interaction
-    global global_live_widget, global_toggle_mic_fn
-    global_live_widget = live_widget
-    global_toggle_mic_fn = toggle_mic
-
-    main_fps = 0.0
-    ema_alpha = 0.1
-    elapsed_time = 1.0 / config.TARGET_FPS
+    def trigger_export():
+        if session.dataset_mode:
+            export_dataset_summary()
+        else:
+            session.export()
 
     # Window initialization - Launch Fullscreen
     window_name = "SAKSHAM V2 - AI Communication Assistant"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     is_fullscreen = True
+
+    def toggle_fullscreen_state():
+        nonlocal is_fullscreen
+        is_fullscreen = not is_fullscreen
+        if is_fullscreen:
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            session.set_toast("Fullscreen: ON")
+        else:
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+            session.set_toast("Fullscreen: OFF")
+
+    # Bind global references for mouse interaction
+    global global_ui, global_live_widget, global_toggle_mic_fn, global_export_fn, global_toggle_fullscreen_fn
+    global_ui = ui
+    global_live_widget = live_widget
+    global_toggle_mic_fn = toggle_mic
+    global_export_fn = trigger_export
+    global_toggle_fullscreen_fn = toggle_fullscreen_state
+
     cv2.setMouseCallback(window_name, mouse_callback)
+
+    main_fps = 0.0
+    ema_alpha = 0.1
+    elapsed_time = 1.0 / config.TARGET_FPS
 
     logging.info("Main loop active. Press 'q' / ESC to quit, 'f' to toggle Fullscreen, 'd' to toggle DEV MODE.")
 
     try:
         while True:
+            if global_request_quit:
+                logging.info("Quit requested via UI window control.")
+                break
+
             t_start = time.perf_counter()
 
             if session.request_mic_toggle:
@@ -473,13 +545,7 @@ def main():
                         logging.info("Quit key pressed.")
                         break
                     elif key in (ord('f'), ord('F')):
-                        is_fullscreen = not is_fullscreen
-                        if is_fullscreen:
-                            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                            session.set_toast("Fullscreen: ON")
-                        else:
-                            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
-                            session.set_toast("Fullscreen: OFF")
+                        toggle_fullscreen_state()
                     elif key in (ord('m'), ord('M')):
                         toggle_mic()
                     elif key == ord(' '):
@@ -513,8 +579,10 @@ def main():
                     elif key in (ord('o'), ord('O')):
                         # Open exports folder in Explorer (Windows)
                         import subprocess
+                        from pathlib import Path
+                        project_root = Path(__file__).resolve().parent.parent
                         try:
-                            subprocess.Popen('explorer exports', shell=True, cwd='e:/gessture')
+                            subprocess.Popen('explorer exports', shell=True, cwd=str(project_root))
                             logging.info('Opened exports folder.')
                         except Exception as e:
                             logging.error(f'Failed to open exports folder: {e}')

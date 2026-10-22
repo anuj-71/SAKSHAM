@@ -1,14 +1,14 @@
 """
-SAKSHAM Live Transcript Widget — Ultra-Crisp Modern Chat Input Bar
-Renders a modern, razor-sharp chat-input pill bar at the bottom of the interface.
-Features TrueType font antialiasing (PIL), crisp geometry, left '+' action button,
-and right microphone with dropdown chevron matching the sleek design.
+SAKSHAM Live Transcript Widget.
+Renders the integrated 64px Bottom Bar with:
+- Rounded input field (#0f1020, border #1e2040, radius 24px)
+- Inside input right: Microphone icon (#555577 idle, #00FF88 active), 1px divider, send arrow icon
+- Standalone Export button (#0f1020, border #1e2040, radius 8px, 110px width)
 """
 
 import cv2
 import numpy as np
 import threading
-import math
 import time
 import os
 from typing import Optional
@@ -17,55 +17,47 @@ from PIL import Image, ImageDraw, ImageFont
 
 class LiveTranscriptWidget:
     """
-    Renders a modern, floating chat-input pill bar at the bottom of the SAKSHAM interface.
-    Integrates live speech recognition preview and direct text typing seamlessly.
+    Renders the SAKSHAM integrated chat input and action bar.
     """
 
-    def __init__(self, bar_height: int = 56):
+    def __init__(self, bar_height: int = 64):
         self.bar_height = bar_height
+        self.scale = max(1.0, bar_height / 64.0)
 
         self._lock = threading.Lock()
         self._preview_text = ""
         self._last_final_text = ""
         self._mic_active = False
-        self._pulse_phase = 0.0
         self._frame_count = 0
 
         # Click hit-box zones
-        self.bar_rect = (0, 0, 0, 0)
-        self.plus_rect = (0, 0, 0, 0)
-        self.text_rect = (0, 0, 0, 0)
         self.mic_rect = (0, 0, 0, 0)
+        self.input_rect = (0, 0, 0, 0)
+        self.send_rect = (0, 0, 0, 0)
+        self.export_rect = (0, 0, 0, 0)
 
-        # Colors (BGR for OpenCV, RGB for PIL)
-        self.COLOR_BAR_BG       = (30, 30, 34)       # Charcoal pill background
-        self.COLOR_BAR_BORDER   = (65, 65, 72)       # Subtle border outline
-        self.COLOR_PLACEHOLDER  = (140, 140, 148)    # Crisp placeholder
-        self.COLOR_TYPED_TEXT   = (245, 245, 250)    # Crisp white typed text
-        self.COLOR_LIVE_TEXT    = (100, 230, 150)    # Active speech recognition green text
-        self.COLOR_ICON_IDLE    = (190, 190, 195)    # Icon normal color
-        self.COLOR_ICON_ACTIVE  = (70, 225, 120)     # Mic active green
-        self.COLOR_CHEVRON      = (140, 140, 148)    # Small chevron arrow
-        self.COLOR_CURSOR       = (100, 210, 255)    # Blinking text cursor
-
-        # Load crisp TrueType fonts
+        # Fonts with resolution scaling
         font_path = "C:/Windows/Fonts/segoeui.ttf"
+        font_bold_path = "C:/Windows/Fonts/segoeuib.ttf"
+
         if not os.path.exists(font_path):
             font_path = "arial.ttf"
+            font_bold_path = "arialbd.ttf"
 
         try:
-            self.font_text = ImageFont.truetype(font_path, 17)
+            self.font_input = ImageFont.truetype(font_path, max(12, int(14 * self.scale)))
+            self.font_btn = ImageFont.truetype(font_bold_path, max(11, int(13 * self.scale)))
         except IOError:
-            self.font_text = ImageFont.load_default()
+            fallback = ImageFont.load_default()
+            self.font_input = fallback
+            self.font_btn = fallback
 
     def set_preview(self, text: str):
-        """Called by STT thread with live transcription state or interim words."""
         with self._lock:
             self._preview_text = text
             self._mic_active = bool(text)
 
     def set_final(self, text: str):
-        """Called when sentence transcription completes."""
         with self._lock:
             self._last_final_text = text
             self._preview_text = ""
@@ -81,56 +73,14 @@ class LiveTranscriptWidget:
              session=None,
              mic_enabled: bool = False) -> np.ndarray:
         """
-        Draws the modern chat input bar over the frame with crisp antialiased rendering.
+        Renders the integrated bottom bar with high-DPI vector precision and crisp typography.
         """
         h, w = frame.shape[:2]
         self._frame_count += 1
 
-        # === Layout Geometry ===
-        pad_x  = 28
-        pad_y  = 16
-        bar_h  = self.bar_height
-        bar_w  = w - (pad_x * 2)
-        bar_x  = pad_x
-        bar_y  = h - bar_h - pad_y
-        radius = bar_h // 2
-
-        self.bar_rect = (bar_x, bar_y, bar_w, bar_h)
-
-        # === 1. Draw Rounded Pill Container ===
-        # Center filled rect
-        cv2.rectangle(
-            frame,
-            (bar_x + radius, bar_y),
-            (bar_x + bar_w - radius, bar_y + bar_h),
-            self.COLOR_BAR_BG, -1
-        )
-        # Left circular cap
-        cv2.circle(frame, (bar_x + radius, bar_y + radius), radius, self.COLOR_BAR_BG, -1, cv2.LINE_AA)
-        # Right circular cap
-        cv2.circle(frame, (bar_x + bar_w - radius, bar_y + radius), radius, self.COLOR_BAR_BG, -1, cv2.LINE_AA)
-
-        # Container border
-        cv2.ellipse(frame, (bar_x + radius, bar_y + radius), (radius, radius), 180, -90, 90, self.COLOR_BAR_BORDER, 1, cv2.LINE_AA)
-        cv2.ellipse(frame, (bar_x + bar_w - radius, bar_y + radius), (radius, radius), 0, -90, 90, self.COLOR_BAR_BORDER, 1, cv2.LINE_AA)
-        cv2.line(frame, (bar_x + radius, bar_y), (bar_x + bar_w - radius, bar_y), self.COLOR_BAR_BORDER, 1, cv2.LINE_AA)
-        cv2.line(frame, (bar_x + radius, bar_y + bar_h), (bar_x + bar_w - radius, bar_y + bar_h), self.COLOR_BAR_BORDER, 1, cv2.LINE_AA)
-
-        # === 2. Left '+' Action Icon ===
-        plus_cx = bar_x + radius + 4
-        plus_cy = bar_y + radius
-        plus_arm = 7
-        self.plus_rect = (plus_cx - 16, bar_y, 32, bar_h)
-
-        cv2.line(frame, (plus_cx - plus_arm, plus_cy), (plus_cx + plus_arm, plus_cy), self.COLOR_ICON_IDLE, 2, cv2.LINE_AA)
-        cv2.line(frame, (plus_cx, plus_cy - plus_arm), (plus_cx, plus_cy + plus_arm), self.COLOR_ICON_IDLE, 2, cv2.LINE_AA)
-
-        # === 3. Right Microphone & Dropdown Chevron ===
-        mic_area_w = 64
-        mic_btn_cx = bar_x + bar_w - radius - 18
-        mic_btn_cy = bar_y + radius
-
-        self.mic_rect = (bar_x + bar_w - radius - 36, bar_y, mic_area_w, bar_h)
+        bar_h = self.bar_height
+        bar_y = h - bar_h
+        s = self.scale
 
         with self._lock:
             preview = self._preview_text
@@ -138,99 +88,172 @@ class LiveTranscriptWidget:
 
         is_recording = mic_enabled or internal_active
 
-        # Pulsing ring when mic is active
-        self._pulse_phase = (self._pulse_phase + 0.16) % (2 * math.pi)
+        # ── 1. Export Button Dimensions ──
+        export_w = int(110 * s)
+        export_h = int(44 * s)
+        export_x = w - int(16 * s) - export_w
+        export_y = bar_y + (bar_h - export_h) // 2
+        self.export_rect = (export_x, export_y, export_w, export_h)
+
+        # ── 2. Main Input Field Dimensions ──
+        input_x = int(16 * s)
+        input_w = (export_x - int(12 * s)) - input_x
+        input_h = int(44 * s)
+        input_y = bar_y + (bar_h - input_h) // 2
+        self.input_rect = (input_x, input_y, input_w - int(76 * s), input_h)
+
+        # Inside Input Right Coordinates
+        mic_cx = input_x + input_w - int(60 * s)
+        mic_cy = input_y + input_h // 2
+        self.mic_rect = (mic_cx - int(16 * s), input_y, int(32 * s), input_h)
+
+        send_btn_x = input_x + input_w - int(24 * s)
+        send_btn_y = input_y + input_h // 2
+        self.send_rect = (send_btn_x - int(14 * s), input_y, int(38 * s), input_h)
+
+        # ── 3. High-DPI Vector Rendering via Pillow (RGBA) ──
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(img_rgb).convert('RGBA')
+        draw = ImageDraw.Draw(pil_img, 'RGBA')
+
+        # Bottom Bar Background (#060711) and Top Border (#1a1a3a)
+        draw.rectangle([0, bar_y, w, h], fill=(6, 7, 17, 255), outline=(26, 26, 58, 255), width=max(1, int(1 * s)))
+
+        # Export Button Container (#0f1020, outline #1e2040, radius 8px)
+        draw.rounded_rectangle(
+            [export_x, export_y, export_x + export_w, export_y + export_h],
+            radius=max(6, int(8 * s)),
+            fill=(15, 16, 32, 255),
+            outline=(30, 32, 64, 255),
+            width=max(1, int(1.5 * s))
+        )
+
+        # Export Download Tray Vector Icon (White)
+        ex_ic_x = export_x + int(16 * s)
+        ex_ic_y = export_y + (export_h - int(16 * s)) // 2
+        lw = max(2, int(2 * s))
+
+        # Arrow down stem and head
+        draw.line([(ex_ic_x + int(5 * s), ex_ic_y), (ex_ic_x + int(5 * s), ex_ic_y + int(8 * s))], fill=(255, 255, 255, 255), width=lw)
+        draw.line([(ex_ic_x + int(2 * s), ex_ic_y + int(5 * s)), (ex_ic_x + int(5 * s), ex_ic_y + int(8 * s))], fill=(255, 255, 255, 255), width=lw)
+        draw.line([(ex_ic_x + int(8 * s), ex_ic_y + int(5 * s)), (ex_ic_x + int(5 * s), ex_ic_y + int(8 * s))], fill=(255, 255, 255, 255), width=lw)
+        # Tray base
+        draw.line([(ex_ic_x, ex_ic_y + int(10 * s)), (ex_ic_x, ex_ic_y + int(13 * s))], fill=(255, 255, 255, 255), width=lw)
+        draw.line([(ex_ic_x, ex_ic_y + int(13 * s)), (ex_ic_x + int(10 * s), ex_ic_y + int(13 * s))], fill=(255, 255, 255, 255), width=lw)
+        draw.line([(ex_ic_x + int(10 * s), ex_ic_y + int(13 * s)), (ex_ic_x + int(10 * s), ex_ic_y + int(10 * s))], fill=(255, 255, 255, 255), width=lw)
+
+        # Export Button Text (White bold)
+        _, _, _, eth = draw.textbbox((0, 0), "Export", font=self.font_btn)
+        draw.text((export_x + int(36 * s), export_y + (export_h - eth) // 2), "Export", font=self.font_btn, fill=(255, 255, 255, 255))
+
+        # Main Input Field Container (#0f1020, outline #1e2040, radius 22px)
+        draw.rounded_rectangle(
+            [input_x, input_y, input_x + input_w, input_y + input_h],
+            radius=int(22 * s),
+            fill=(15, 16, 32, 255),
+            outline=(30, 32, 64, 255),
+            width=max(1, int(1.5 * s))
+        )
+
+        # Microphone Icon and Soft Glow
         if is_recording:
-            pulse_radius = int(radius - 5 + 3 * abs(math.sin(self._pulse_phase)))
-            cv2.circle(frame, (mic_btn_cx, mic_btn_cy), pulse_radius, (35, 120, 60), 1, cv2.LINE_AA)
+            mic_col = (0, 255, 136, 255)  # Active #00FF88
+            glow_r = int(18 * s)
+            draw.ellipse([mic_cx - glow_r, mic_cy - glow_r, mic_cx + glow_r, mic_cy + glow_r], fill=(0, 255, 136, 40))
+        else:
+            mic_col = (133, 137, 149, 255)  # Idle #858995
 
-        mic_col = self.COLOR_ICON_ACTIVE if is_recording else self.COLOR_ICON_IDLE
+        # Crisp vector microphone
+        cw = int(3 * s)
+        ch = int(6 * s)
+        draw.rounded_rectangle([mic_cx - cw, mic_cy - ch, mic_cx + cw, mic_cy + int(2 * s)], radius=int(3 * s), fill=mic_col)
+        draw.arc([mic_cx - int(6 * s), mic_cy - int(3 * s), mic_cx + int(6 * s), mic_cy + int(5 * s)], start=0, end=180, fill=mic_col, width=max(1, int(1.5 * s)))
+        draw.line([(mic_cx, mic_cy + int(5 * s)), (mic_cx, mic_cy + int(9 * s))], fill=mic_col, width=max(1, int(1.5 * s)))
+        draw.line([(mic_cx - int(3 * s), mic_cy + int(9 * s)), (mic_cx + int(3 * s), mic_cy + int(9 * s))], fill=mic_col, width=max(1, int(1.5 * s)))
 
-        # Draw crisp vector microphone
-        mx, my = mic_btn_cx, mic_btn_cy
-        # Capsule body
-        cv2.rectangle(frame, (mx - 4, my - 8), (mx + 4, my + 2), mic_col, -1)
-        cv2.circle(frame, (mx, my - 8), 4, mic_col, -1, cv2.LINE_AA)
-        cv2.circle(frame, (mx, my + 2), 4, mic_col, -1, cv2.LINE_AA)
-        # Arc stand
-        cv2.ellipse(frame, (mx, my + 1), (7, 6), 0, 10, 170, mic_col, 2, cv2.LINE_AA)
-        # Stem & base
-        cv2.line(frame, (mx, my + 7), (mx, my + 11), mic_col, 2, cv2.LINE_AA)
-        cv2.line(frame, (mx - 4, my + 11), (mx + 4, my + 11), mic_col, 2, cv2.LINE_AA)
+        # Thin Vertical Divider Line 1px #1e2040
+        div_x = input_x + input_w - int(40 * s)
+        draw.line([(div_x, input_y + int(12 * s)), (div_x, input_y + input_h - int(12 * s))], fill=(30, 32, 64, 255), width=max(1, int(1 * s)))
 
-        # Dropdown chevron 'v'
-        chev_x = mic_btn_cx + 15
-        chev_y = mic_btn_cy - 1
-        cv2.line(frame, (chev_x - 3, chev_y - 2), (chev_x, chev_y + 2), self.COLOR_CHEVRON, 1, cv2.LINE_AA)
-        cv2.line(frame, (chev_x, chev_y + 2), (chev_x + 3, chev_y - 2), self.COLOR_CHEVRON, 1, cv2.LINE_AA)
-
-        # === 4. Middle Text Input / Live Transcript Zone ===
-        text_x = plus_cx + 22
-        text_y_offset = bar_y + (bar_h - 22) // 2
-        text_max_w = bar_w - (radius * 2) - mic_area_w - 20
-        self.text_rect = (text_x - 6, bar_y, text_max_w + 12, bar_h)
-
+        # Send Arrow Icon (➤)
         is_focused = getattr(session, 'is_typing_focused', False) if session else False
         typed_buffer = getattr(session, 'typing_buffer', '') if session else ''
+        has_text = bool(typed_buffer or preview)
+        send_col = (0, 229, 255, 255) if has_text else (133, 137, 149, 255)
+
+        sx, sy = send_btn_x - int(4 * s), send_btn_y - int(7 * s)
+        draw.polygon([
+            (sx, sy),
+            (sx + int(14 * s), sy + int(7 * s)),
+            (sx, sy + int(14 * s)),
+            (sx + int(3 * s), sy + int(7 * s))
+        ], fill=send_col)
+
+        # Input Text / Placeholder / Live Speech Preview
+        text_render_x = input_x + int(22 * s)
+        text_max_w = input_w - int(95 * s)
 
         if preview:
-            display_text = preview
-            text_color_rgb = (self.COLOR_LIVE_TEXT[2], self.COLOR_LIVE_TEXT[1], self.COLOR_LIVE_TEXT[0])
+            display_str = preview
+            text_color = (0, 255, 136, 255)  # #00FF88
             show_cursor = True
         elif is_focused or typed_buffer:
-            display_text = typed_buffer
-            text_color_rgb = (self.COLOR_TYPED_TEXT[2], self.COLOR_TYPED_TEXT[1], self.COLOR_TYPED_TEXT[0])
+            display_str = typed_buffer
+            text_color = (255, 255, 255, 255)
             show_cursor = is_focused
         else:
-            display_text = "Write a message..."
-            text_color_rgb = (self.COLOR_PLACEHOLDER[2], self.COLOR_PLACEHOLDER[1], self.COLOR_PLACEHOLDER[0])
+            display_str = "Write a message..."
+            text_color = (133, 137, 149, 255)  # Crisp secondary #858995
             show_cursor = False
 
-        # Render text with PIL for crystal clear typography
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(img_rgb)
-        draw = ImageDraw.Draw(pil_img)
+        _, _, _, ith = draw.textbbox((0, 0), "Ag", font=self.font_input)
+        text_render_y = input_y + (input_h - ith) // 2
 
-        # Truncate text from left if exceeding bar width
-        display_str = display_text
-        while display_str:
-            _, _, tw, _ = draw.textbbox((0, 0), display_str, font=self.font_text)
+        # Truncate if overflowing width
+        truncated = display_str
+        while truncated:
+            _, _, tw, _ = draw.textbbox((0, 0), truncated, font=self.font_input)
             if tw <= text_max_w:
                 break
-            display_str = display_str[1:]
+            truncated = truncated[1:]
 
-        draw.text((text_x, text_y_offset), display_str, font=self.font_text, fill=text_color_rgb)
+        draw.text((text_render_x, text_render_y), truncated, font=self.font_input, fill=text_color)
 
-        # Blinking cursor when typing / streaming
+        # Blinking Cursor
         if show_cursor and (self._frame_count // 16) % 2 == 0:
-            _, _, tw, _ = draw.textbbox((0, 0), display_str, font=self.font_text)
-            cursor_x = text_x + (tw + 2 if display_str else 0)
+            _, _, tw, _ = draw.textbbox((0, 0), truncated, font=self.font_input)
+            cursor_x = text_render_x + (tw + int(2 * s) if truncated else 0)
             draw.line(
-                [(cursor_x, bar_y + 14), (cursor_x, bar_y + bar_h - 14)],
-                fill=(self.COLOR_CURSOR[2], self.COLOR_CURSOR[1], self.COLOR_CURSOR[0]),
-                width=2
+                [(cursor_x, input_y + int(12 * s)), (cursor_x, input_y + input_h - int(12 * s))],
+                fill=(0, 229, 255, 255),
+                width=max(1, int(2 * s))
             )
 
-        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        return cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
 
     def handle_click(self, x: int, y: int) -> Optional[str]:
         """
-        Determines which sub-element was clicked in the pill bar.
-        Returns: 'plus', 'mic', 'text', or None.
+        Determines which interactive bottom bar element was clicked.
+        Returns: 'mic', 'send', 'export', 'text', or None.
         """
-        bx, by, bw, bh = self.bar_rect
-        if not (bx <= x <= bx + bw and by <= y <= by + bh):
-            return None
-
-        # Check Plus button
-        px, py, pw, ph = self.plus_rect
-        if px <= x <= px + pw and py <= y <= py + ph:
-            return 'plus'
-
-        # Check Mic button
+        # Mic icon inside input
         mx, my, mw, mh = self.mic_rect
         if mx <= x <= mx + mw and my <= y <= my + mh:
             return 'mic'
 
-        # Text area
-        return 'text'
+        # Send arrow icon inside input
+        sx, sy, sw, sh = self.send_rect
+        if sx <= x <= sx + sw and sy <= y <= sy + sh:
+            return 'send'
+
+        # Input field text area
+        ix, iy, iw, ih = self.input_rect
+        if ix <= x <= ix + iw and iy <= y <= iy + ih:
+            return 'text'
+
+        # Export button
+        ex, ey, ew, eh = self.export_rect
+        if ex <= x <= ex + ew and ey <= y <= ey + eh:
+            return 'export'
+
+        return None

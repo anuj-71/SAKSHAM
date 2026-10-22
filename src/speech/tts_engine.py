@@ -87,8 +87,10 @@ class PyTTSx3Engine(BaseTTSEngine):
 
     def _preload_cache(self):
         phrases = [
-            "Hello", "I need help", "I need water", 
-            "Thank you", "Please stop", "Yes", "No"
+            "Hello", "Goodbye", "I need help", "I need water", 
+            "Thank you", "Please stop", "Please", "Yes", "No",
+            "I want food", "I need a drink of water", "I want to go home",
+            "I am hungry", "I feel sick", "I am sleepy", "Where"
         ]
         for phrase in phrases:
             safe_name = "".join(c for c in phrase.lower() if c.isalnum() or c == " ").replace(" ", "_")
@@ -100,7 +102,8 @@ class PyTTSx3Engine(BaseTTSEngine):
                 except Exception as e:
                     logging.error(f"Failed to cache phrase '{phrase}': {e}")
                     continue
-            self.phrase_cache[phrase.lower()] = filename
+            key = phrase.lower().strip().rstrip(".,!?;:")
+            self.phrase_cache[key] = filename
         logging.info(f"TTS Phrase Cache loaded with {len(self.phrase_cache)} phrases.")
 
     def _synthesize_to_file(self, text: str, filename: str):
@@ -150,7 +153,8 @@ class PyTTSx3Engine(BaseTTSEngine):
                     except Exception:
                         logging.exception("on_speech_start handler raised")
 
-                cached_file = self.phrase_cache.get(text.lower().strip())
+                lookup_key = text.lower().strip().rstrip(".,!?;:")
+                cached_file = self.phrase_cache.get(lookup_key)
                 if cached_file and os.path.exists(cached_file):
                     logging.info(f"TTS CACHE HIT: '{text}'")
                     try:
